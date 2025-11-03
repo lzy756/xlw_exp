@@ -1,0 +1,123 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual Environments
+.venv/
+venv/
+ENV/
+env/
+.env
+
+# uv
+.venv/
+uv.lock
+
+# PyTorch
+*.pth
+*.pt
+!*checkpoint*.pt
+!*theta*.pt
+!*phi*.pt
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# IPython
+profile_default/
+ipython_config.py
+
+# pyenv
+.python-version
+
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Project specific
+datasets/
+cache/
+outputs/
+logs/
+*.log
+
+# Temporary files
+*.tmp
+*.bak
+.cache/
+
+# Coverage reports
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+.hypothesis/
+.pytest_cache/
+
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Pyre type checker
+.pyre/
+
+# Data files (DomainNet)
+data/domainnet/
+data/DomainNet/
+*.jpg
+*.jpeg
+*.png
+*.bmp
+index.json
+
+# markdown files (except README.md,quickstart.md)
+*.md
+!README.md
+!./quickstart.md
+
+# support shell files (except those in ./scripts/)
+*.sh
+!./scripts/

@@ -1,0 +1,66 @@
+# FL-DomainNet-FAP-LoRA Configuration
+# Default hyperparameters for federated learning experiment
+
+# Dataset
+data:
+  root: "./data/domainnet"  # Path to DomainNet dataset
+  domains: ["clipart", "infograph", "painting", "quickdraw", "real", "sketch"]
+  num_classes: 126  # Use 126-class subset
+
+# Client partitioning
+partition:
+  num_clients_per_domain: 24
+  alpha: 0.1  # Dirichlet concentration parameter
+  unload_ratio: 0.2  # ρ: fraction of data offloaded to DC
+  val_ratio: 0.1  # Fraction of data for validation
+  seed: 42
+
+# Model architecture
+model:
+  backbone: "resnet18"
+  pretrained: true
+  lora:
+    rank: 16  # r: LoRA rank
+    alpha: 16  # α: LoRA scaling factor (alpha/r)
+    attach_layers: ["layer4"]  # Attach LoRA to ResNet-18's layer4
+
+# Training
+training:
+  total_rounds: 200
+  local_steps: 5  # Local training steps per client
+  batch_size: 32
+  clients_participation: 0.2  # Fraction of clients participating per round
+
+  # Learning rates
+  lr_theta: 3e-4  # Learning rate for global backbone
+  lr_phi: 1e-3    # Learning rate for domain-specific parameters
+  weight_decay: 1e-4
+  cosine_lr: true  # Use cosine learning rate schedule
+
+# FAP-Float(S) Selector
+selector:
+  K: 5  # Aggregation period (select every K rounds)
+  w1: 1.0  # Weight for loss L_e
+  w2: 0.5  # Weight for drift Δ_e
+  w3: 0.3  # Weight for coverage H_e
+  w4: 0.2  # Weight for stability S_e^stay
+  tau: 1.0  # Softmax temperature
+  stability_bonus: 0.2  # Bonus for selecting same aggregator
+
+# Edge Manager
+edge_manager:
+  ema_beta: 0.9  # Beta for exponential moving average of loss
+  proj_dim: 64   # Dimension for random projection (prototypes)
+
+# Logging and checkpointing
+logging:
+  log_interval: 1  # Log metrics every N rounds
+  checkpoint_interval: 20  # Save checkpoints every N rounds
+  output_dir: "./outputs"
+  exp_name: "exp1"
+
+# System
+system:
+  device: "cuda"  # Device for training (cuda/cpu)
+  seed: 42       # Random seed for reproducibility
+  num_workers: 4  # DataLoader workers
