@@ -3,7 +3,7 @@
 
 # Dataset
 data:
-  root: "./data/domainnet"  # Path to DomainNet dataset
+  root: "/root/domainnet"  # Path to DomainNet dataset
   domains: ["clipart", "infograph", "painting", "quickdraw", "real", "sketch"]
   num_classes: 126  # Use 126-class subset
 
@@ -32,9 +32,9 @@ training:
   clients_participation: 0.2  # Fraction of clients participating per round
 
   # Learning rates
-  lr_theta: 3e-4  # Learning rate for global backbone
-  lr_phi: 1e-3    # Learning rate for domain-specific parameters
-  weight_decay: 1e-4
+  lr_theta: 0.0003  # Learning rate for global backbone (3e-4)
+  lr_phi: 0.001    # Learning rate for domain-specific parameters (1e-3)
+  weight_decay: 0.0001  # Weight decay (1e-4)
   cosine_lr: true  # Use cosine learning rate schedule
 
 # FAP-Float(S) Selector
@@ -57,7 +57,13 @@ logging:
   log_interval: 1  # Log metrics every N rounds
   checkpoint_interval: 20  # Save checkpoints every N rounds
   output_dir: "./outputs"
-  exp_name: "exp1"
+  exp_name: ""  # Optional experiment name/tag (appended to timestamp)
+  
+  # New experiment tracking features
+  use_timestamp_dir: true  # Use timestamp-based directory names (YYYY-MM-DD-HH-MM)
+  save_config: true  # Save both original and effective configurations
+  save_experiment_info: true  # Save experiment metadata (git, environment, timing)
+  timestamp_format: "%Y-%m-%d-%H-%M"  # Timestamp format for directory names
 
 # System
 system:

@@ -23,7 +23,8 @@ def run_training(
     edge_manager: EdgeManager,
     selector: FAPFloatSoftmax,
     trainer: LocalTrainer,
-    logger
+    logger,
+    exp_dir: str
 ) -> Dict:
     """Run federated learning training loop.
 
@@ -36,6 +37,7 @@ def run_training(
         selector: FAPFloatSoftmax selector instance
         trainer: LocalTrainer instance
         logger: Logger instance
+        exp_dir: Experiment directory path
 
     Returns:
         Dictionary with training metrics
@@ -47,14 +49,9 @@ def run_training(
     clients_participation = config['training']['clients_participation']
     K = config['selector']['K']
     checkpoint_interval = config['logging']['checkpoint_interval']
-    output_dir = os.path.join(
-        config['logging']['output_dir'],
-        config['logging']['exp_name']
-    )
-
-    # Create output directories
-    os.makedirs(output_dir, exist_ok=True)
-    os.makedirs(os.path.join(output_dir, 'checkpoints'), exist_ok=True)
+    
+    # Use the provided experiment directory
+    output_dir = exp_dir
 
     # Initialize global theta (backbone parameters)
     theta_global = {
@@ -78,9 +75,9 @@ def run_training(
 
     # Main training loop
     for round_num in range(1, total_rounds + 1):
-        logger.info(f"\n{'='*50}")
+        logger.info('='*50)
         logger.info(f"Round {round_num}/{total_rounds}")
-        logger.info(f"{'='*50}")
+        logger.info('='*50)
 
         # Update coverage at round start
         edge_manager.begin_round()
@@ -177,7 +174,7 @@ def run_training(
 
         # Calculate aggregate metrics
         avg_acc, worst_acc, variance = per_domain_metrics(domain_accuracies)
-        logger.info(f"\nRound {round_num} metrics:")
+        logger.info(f"Round {round_num} metrics:")
         logger.info(f"  Average accuracy: {avg_acc:.2f}%")
         logger.info(f"  Worst accuracy: {worst_acc:.2f}%")
         logger.info(f"  Variance: {variance:.4f}")
@@ -191,7 +188,7 @@ def run_training(
 
         # Phase 5: Aggregation Point Selection (every K rounds)
         if round_num % K == 0 and all_theta_updates:
-            logger.info(f"\nRound {round_num}: Aggregator selection")
+            logger.info(f"Round {round_num}: Aggregator selection")
 
             # Get metrics for selection
             selection_metrics = edge_manager.get_metrics_for_selection()
@@ -267,7 +264,7 @@ def run_training(
                     torch.save({'state_dict': phi_state, 'round': round_num}, phi_path)
 
     # Final checkpoint
-    logger.info("\nTraining completed! Saving final checkpoints...")
+    logger.info("Training completed! Saving final checkpoints...")
 
     # Save final theta
     theta_path = os.path.join(output_dir, 'checkpoints', 'theta_global_final.pt')

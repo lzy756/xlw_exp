@@ -3,6 +3,7 @@
 import os
 import sys
 import json
+import copy
 import argparse
 from typing import Dict
 import torch
@@ -16,6 +17,7 @@ from core.edge_manager import EdgeManager
 from core.selector import FAPFloatSoftmax
 from core.loop import run_training
 from utils.common import set_seed, build_logger
+from utils.experiment import ExperimentLogger
 
 
 def load_config(config_path: str) -> Dict:
@@ -113,10 +115,31 @@ def main():
         choices=['cuda', 'cpu'],
         help='Override device'
     )
+    parser.add_argument(
+        '--exp-tag',
+        type=str,
+        dest='exp_tag',
+        help='Experiment tag/name to append to timestamp'
+    )
+    parser.add_argument(
+        '--output-dir',
+        type=str,
+        dest='output_dir',
+        help='Override output directory'
+    )
+    parser.add_argument(
+        '--no-timestamp',
+        action='store_true',
+        dest='no_timestamp',
+        help='Disable timestamp-based directory naming'
+    )
     args = parser.parse_args()
 
     # Load configuration
     config = load_config(args.config)
+    
+    # Keep a copy of original config for saving
+    original_config = copy.deepcopy(config)
 
     # Apply overrides
     if args.domains:
@@ -128,19 +151,26 @@ def main():
     if args.device:
         config['system']['device'] = args.device
 
+    # Create experiment logger and directory
+    exp_logger = ExperimentLogger(config, args)
+    exp_dir = exp_logger.create_experiment_dir()
+    print(f"Experiment directory: {exp_dir}")
+    
+    # Save configurations
+    exp_logger.save_configs(original_config, config)
+    
+    # Save initial experiment info
+    exp_logger.save_experiment_info(status='running')
+
     # Set random seed
     set_seed(config['system']['seed'])
 
     # Setup logging
-    log_dir = os.path.join(
-        config['logging']['output_dir'],
-        config['logging']['exp_name']
-    )
-    os.makedirs(log_dir, exist_ok=True)
-    log_file = os.path.join(log_dir, 'train.log')
+    log_file = os.path.join(exp_dir, 'train.log')
     logger = build_logger('FL-DomainNet', log_file)
 
     logger.info("Starting FL-DomainNet experiment")
+    logger.info(f"Experiment directory: {exp_dir}")
     logger.info(f"Configuration: {args.config}")
     logger.info(f"Domains: {config['data']['domains']}")
     logger.info(f"Device: {config['system']['device']}")
@@ -150,85 +180,103 @@ def main():
         logger.warning("CUDA not available, falling back to CPU")
         config['system']['device'] = 'cpu'
 
-    # Prepare data
-    logger.info("Preparing data...")
-    train_data, val_data = prepare_data(config)
-    logger.info(f"Data preparation complete")
+    try:
+        # Prepare data
+        logger.info("Preparing data...")
+        train_data, val_data = prepare_data(config)
+        logger.info(f"Data preparation complete")
 
-    # Initialize model
-    logger.info("Initializing model...")
-    model = ResNet18_EAPH(
-        num_classes=config['data']['num_classes'],
-        domains=config['data']['domains'],
-        lora_rank=config['model']['lora']['rank'],
-        lora_alpha=config['model']['lora']['alpha'],
-        pretrained=config['model']['pretrained']
-    )
+        # Initialize model
+        logger.info("Initializing model...")
+        model = ResNet18_EAPH(
+            num_classes=config['data']['num_classes'],
+            domains=config['data']['domains'],
+            lora_rank=config['model']['lora']['rank'],
+            lora_alpha=config['model']['lora']['alpha'],
+            pretrained=config['model']['pretrained']
+        )
 
-    # Initialize components
-    trainer = LocalTrainer(
-        model=model,
-        device=config['system']['device'],
-        lr_theta=config['training']['lr_theta'],
-        lr_phi=config['training']['lr_phi'],
-        weight_decay=config['training']['weight_decay'],
-        cosine_lr=config['training']['cosine_lr']
-    )
+        # Initialize components
+        trainer = LocalTrainer(
+            model=model,
+            device=config['system']['device'],
+            lr_theta=config['training']['lr_theta'],
+            lr_phi=config['training']['lr_phi'],
+            weight_decay=config['training']['weight_decay'],
+            cosine_lr=config['training']['cosine_lr']
+        )
 
-    edge_manager = EdgeManager(
-        model=model,
-        domains=config['data']['domains'],
-        num_classes=config['data']['num_classes'],
-        proj_dim=config['edge_manager']['proj_dim'],
-        device=config['system']['device']
-    )
+        edge_manager = EdgeManager(
+            model=model,
+            domains=config['data']['domains'],
+            num_classes=config['data']['num_classes'],
+            proj_dim=config['edge_manager']['proj_dim'],
+            device=config['system']['device']
+        )
 
-    selector = FAPFloatSoftmax(
-        domains=config['data']['domains'],
-        w1=config['selector']['w1'],
-        w2=config['selector']['w2'],
-        w3=config['selector']['w3'],
-        w4=config['selector']['w4'],
-        tau=config['selector']['tau']
-    )
+        selector = FAPFloatSoftmax(
+            domains=config['data']['domains'],
+            w1=config['selector']['w1'],
+            w2=config['selector']['w2'],
+            w3=config['selector']['w3'],
+            w4=config['selector']['w4'],
+            tau=config['selector']['tau']
+        )
 
-    # Run training
-    logger.info("Starting training...")
-    metrics = run_training(
-        config=config,
-        model=model,
-        train_data=train_data,
-        val_data=val_data,
-        edge_manager=edge_manager,
-        selector=selector,
-        trainer=trainer,
-        logger=logger
-    )
+        # Run training with exp_dir passed to loop
+        logger.info("Starting training...")
+        metrics = run_training(
+            config=config,
+            model=model,
+            train_data=train_data,
+            val_data=val_data,
+            edge_manager=edge_manager,
+            selector=selector,
+            trainer=trainer,
+            logger=logger,
+            exp_dir=exp_dir
+        )
 
-    # Save final metrics
-    metrics_path = os.path.join(log_dir, 'metrics.json')
-    with open(metrics_path, 'w') as f:
-        json.dump(metrics, f, indent=2)
-    logger.info(f"Metrics saved to {metrics_path}")
+        # Save final metrics
+        metrics_path = os.path.join(exp_dir, 'metrics.json')
+        with open(metrics_path, 'w') as f:
+            json.dump(metrics, f, indent=2)
+        logger.info(f"Metrics saved to {metrics_path}")
 
-    # Print summary
-    logger.info("\n" + "="*50)
-    logger.info("Training Summary")
-    logger.info("="*50)
-    logger.info(f"Final average accuracy: {metrics['avg_acc'][-1]:.2f}%")
-    logger.info(f"Final worst accuracy: {metrics['worst_acc'][-1]:.2f}%")
-    logger.info(f"Final variance: {metrics['variance'][-1]:.4f}")
-    logger.info(f"Selected aggregators: {metrics['selected_aggregators']}")
+        # Print summary
+        logger.info("="*50)
+        logger.info("Training Summary")
+        logger.info("="*50)
+        logger.info(f"Final average accuracy: {metrics['avg_acc'][-1]:.2f}%")
+        logger.info(f"Final worst accuracy: {metrics['worst_acc'][-1]:.2f}%")
+        logger.info(f"Final variance: {metrics['variance'][-1]:.4f}")
+        logger.info(f"Selected aggregators: {metrics['selected_aggregators']}")
 
-    # Check success criteria
-    if len(metrics['worst_acc']) > 1:
-        worst_improvement = metrics['worst_acc'][-1] - metrics['worst_acc'][0]
-        variance_reduction = (metrics['variance'][0] - metrics['variance'][-1]) / metrics['variance'][0] * 100
+        # Check success criteria
+        if len(metrics['worst_acc']) > 1:
+            worst_improvement = metrics['worst_acc'][-1] - metrics['worst_acc'][0]
 
-        logger.info(f"\nWorst-domain improvement: {worst_improvement:.2f} pp")
-        logger.info(f"Variance reduction: {variance_reduction:.2f}%")
+            if metrics['variance'][0] > 0:
+                variance_reduction = (metrics['variance'][0] - metrics['variance'][-1]) / metrics['variance'][0] * 100
+                logger.info(f"Worst-domain improvement: {worst_improvement:.2f} pp")
+                logger.info(f"Variance reduction: {variance_reduction:.2f}%")
+            else:
+                logger.info(f"Worst-domain improvement: {worst_improvement:.2f} pp")
+                logger.info("Variance reduction: N/A (insufficient variance)")
 
-    logger.info("\nExperiment completed successfully!")
+        logger.info("Experiment completed successfully!")
+        
+        # Update experiment info with success status
+        exp_logger.save_experiment_info(status='completed', exit_code=0)
+        
+    except KeyboardInterrupt:
+        logger.warning("Experiment interrupted by user")
+        exp_logger.save_experiment_info(status='interrupted', exit_code=130)
+        raise
+    except Exception as e:
+        logger.error(f"Experiment failed with error: {e}", exc_info=True)
+        exp_logger.save_experiment_info(status='failed', error=str(e), exit_code=1)
+        raise
 
 
 if __name__ == '__main__':
