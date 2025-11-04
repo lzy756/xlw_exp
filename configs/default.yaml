@@ -6,14 +6,16 @@ data:
   root: "/root/domainnet"  # Path to DomainNet dataset
   domains: ["clipart", "infograph", "painting", "quickdraw", "real", "sketch"]
   num_classes: 126  # Use 126-class subset
+  offload_pool_enabled: true  # Enable DC training on offload pool (optional)
 
 # Client partitioning
 partition:
   num_clients_per_domain: 24
   alpha: 0.1  # Dirichlet concentration parameter
-  unload_ratio: 0.2  # ρ: fraction of data offloaded to DC
+  unload_ratio: 0.2  # ρ: fraction of data offloaded to DC (20% of training data)
   val_ratio: 0.1  # Fraction of data for validation
   seed: 42
+  offload_pool_enabled: true  # Enable DC training on offload pool (optional)
 
 # Model architecture
 model:

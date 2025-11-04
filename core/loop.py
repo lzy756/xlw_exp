@@ -193,6 +193,10 @@ def run_training(
             # Get metrics for selection
             selection_metrics = edge_manager.get_metrics_for_selection()
 
+            # Log drift metrics per domain
+            logger.info(f"Domain drift scores (Δ_e): {selection_metrics['drift_map']}")
+            logger.info(f"Domain EMA losses (L_e): {selection_metrics['L_map']}")
+
             # Select aggregator
             selected_domain, probabilities, scores = selector.select(
                 L_map=selection_metrics['L_map'],
