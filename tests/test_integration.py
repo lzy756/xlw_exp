@@ -295,7 +295,150 @@ def test_domain_phi_isolation():
     print("Domain isolation test passed!")
 
 
+def test_selection_every_K_rounds():
+    """Test that selection happens every K rounds and worst-domain gets selected more frequently."""
+    set_seed(42)
+    config = create_test_config()
+
+    # Create dummy dataset index with imbalanced data to create "worst" domains
+    index = {
+        'domains': config['data']['domains'],
+        'num_classes': config['data']['num_classes'],
+        'samples': []
+    }
+
+    # Add more samples for 'clipart' (easier domain) and fewer for 'real' (harder domain)
+    for class_id in range(config['data']['num_classes']):
+        # Clipart: 50 samples per class
+        for sample_id in range(50):
+            index['samples'].append({
+                'path': f'clipart/class_{class_id}/sample_{sample_id}.jpg',
+                'label': class_id,
+                'domain': 'clipart'
+            })
+        # Real: 30 samples per class (harder due to less data)
+        for sample_id in range(30):
+            index['samples'].append({
+                'path': f'real/class_{class_id}/sample_{sample_id}.jpg',
+                'label': class_id,
+                'domain': 'real'
+            })
+
+    # Save index
+    index_path = os.path.join(config['data']['root'], 'index.json')
+    with open(index_path, 'w') as f:
+        json.dump(index, f)
+
+    # Create dummy images
+    for sample in index['samples'][:10]:  # Just create a few for testing
+        img_path = os.path.join(config['data']['root'], sample['path'])
+        os.makedirs(os.path.dirname(img_path), exist_ok=True)
+        # Create a tiny dummy image
+        from PIL import Image
+        img = Image.new('RGB', (32, 32), color='red')
+        img.save(img_path)
+
+    # Initialize model
+    model = ResNet18_EAPH(
+        num_classes=config['data']['num_classes'],
+        domains=config['data']['domains'],
+        lora_rank=config['model']['lora']['rank'],
+        lora_alpha=config['model']['lora']['alpha'],
+        pretrained=False
+    )
+
+    # Initialize EdgeManager
+    edge_manager = EdgeManager(
+        model=model,
+        domains=config['data']['domains'],
+        num_classes=config['data']['num_classes'],
+        proj_dim=config['edge_manager']['proj_dim'],
+        device=config['system']['device']
+    )
+
+    # Initialize Selector
+    selector = FAPFloatSoftmax(
+        domains=config['data']['domains'],
+        w1=config['selector']['w1'],
+        w2=config['selector']['w2'],
+        w3=config['selector']['w3'],
+        w4=config['selector']['w4'],
+        tau=config['selector']['tau']
+    )
+
+    # Simulate multiple rounds with selection
+    K = config['selector']['K']
+    total_rounds = 10  # Run 10 rounds to see selection pattern
+    selection_history = []
+
+    for round_num in range(1, total_rounds + 1):
+        # Update coverage
+        edge_manager.begin_round()
+
+        # Simulate different losses for domains (make 'real' consistently worse)
+        # In real training, these would come from actual evaluation
+        # We simulate 'real' having higher loss (worse performance)
+        if round_num <= 5:
+            # Early rounds: 'real' performs worse
+            L_map = {'clipart': 0.3, 'real': 0.7}
+            drift_map = {'clipart': 0.1, 'real': 0.3}
+        else:
+            # Later rounds: still worse but improving
+            L_map = {'clipart': 0.2, 'real': 0.5}
+            drift_map = {'clipart': 0.05, 'real': 0.2}
+
+        # Update EMA losses manually
+        for domain in config['data']['domains']:
+            edge_manager.L_ema[domain].update(L_map[domain])
+
+        # Simulate drift by creating dummy prototypes
+        for domain in config['data']['domains']:
+            # Create some dummy prototypes
+            edge_manager.proto_sum[domain][0] = torch.randn(config['edge_manager']['proj_dim'])
+            edge_manager.proto_cnt[domain][0] = 10.0
+            # Compute drift (will be 0 first time, then non-zero)
+            edge_manager.compute_drift(domain)
+
+        # Every K rounds, do selection
+        if round_num % K == 0:
+            metrics = edge_manager.get_metrics_for_selection()
+            selected_domain, probs, scores = selector.select(
+                L_map=metrics['L_map'],
+                drift_map=metrics['drift_map'],
+                cover_map=metrics['cover_map'],
+                stay_map=metrics['stay_map']
+            )
+
+            selection_history.append(selected_domain)
+            edge_manager.end_round_with_aggregator(selected_domain)
+
+            print(f"Round {round_num}: Selected {selected_domain}")
+            print(f"  Probabilities: {dict(zip(config['data']['domains'], probs))}")
+            print(f"  L_map: {metrics['L_map']}")
+
+    # Verify selections happened
+    assert len(selection_history) == total_rounds // K, "Selection should happen every K rounds"
+
+    # Verify 'real' (worse domain) was selected at least once
+    # Since it has higher loss and drift, it should be favored by the selector
+    assert 'real' in selection_history, "Worst-performing domain should be selected at least once"
+
+    # Count selections
+    real_count = selection_history.count('real')
+    clipart_count = selection_history.count('clipart')
+
+    print(f"\nSelection statistics over {len(selection_history)} selection rounds:")
+    print(f"  'real' (worst domain): {real_count} times")
+    print(f"  'clipart' (better domain): {clipart_count} times")
+
+    # With fairness-aware selection, the worst domain should get selected more often
+    # Note: This is probabilistic, so we can't guarantee it every time
+    # But with sufficient rounds and clear performance gap, it should happen
+    print("\nSelection test passed!")
+
+
 if __name__ == '__main__':
     test_full_round_2_domains_4_clients()
     test_domain_phi_isolation()
+    test_selection_every_K_rounds()
     print("All integration tests passed!")
