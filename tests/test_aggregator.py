@@ -114,3 +114,61 @@ def test_fedavg_weight_normalization():
     # Should normalize: 2/5 * 1 + 3/5 * 2 = 0.4 + 1.2 = 1.6
     expected = torch.tensor([1.6])
     assert torch.allclose(result['param'], expected, atol=1e-6)
+
+
+def test_aggregate_phi_excludes_theta_keys():
+    """Test that aggregate_phi_domain excludes backbone (theta) parameters."""
+    # Create state dicts with all types of parameters
+    state1 = {
+        'conv1.weight': torch.ones(64, 3, 7, 7),  # Theta - should be excluded
+        'layer1.0.conv1.weight': torch.ones(64, 64, 3, 3),  # Theta - should be excluded
+        'fc.weight': torch.ones(512, 1000),  # Theta - should be excluded
+        'lora_blocks.0.weight': torch.ones(16, 512),  # Phi - should be included
+        'heads.domain1.weight': torch.ones(10, 512),  # Phi - should be included
+    }
+
+    state2 = {k: v * 2 for k, v in state1.items()}
+
+    states = [state1, state2]
+    weights = [0.5, 0.5]
+
+    # Aggregate phi for domain1
+    result = aggregate_phi_domain(states, weights, domain='domain1')
+
+    # Verify only phi parameters are included
+    assert 'lora_blocks.0.weight' in result, "LoRA blocks should be in phi"
+    assert 'heads.domain1.weight' in result, "Domain head should be in phi"
+    assert 'conv1.weight' not in result, "Backbone conv should not be in phi"
+    assert 'layer1.0.conv1.weight' not in result, "Backbone layer should not be in phi"
+    assert 'fc.weight' not in result, "Backbone FC should not be in phi"
+
+
+def test_aggregate_theta_excludes_phi_keys():
+    """Test that aggregate_theta excludes LoRA and head (phi) parameters."""
+    # Create state dicts with all types of parameters
+    state1 = {
+        'conv1.weight': torch.ones(64, 3, 7, 7),  # Theta - should be included
+        'layer1.0.conv1.weight': torch.ones(64, 64, 3, 3),  # Theta - should be included
+        'bn1.weight': torch.ones(64),  # Theta - should be included
+        'lora_blocks.0.weight': torch.ones(16, 512),  # Phi - should be excluded
+        'lora_blocks.0.bias': torch.ones(16),  # Phi - should be excluded
+        'heads.domain1.weight': torch.ones(10, 512),  # Phi - should be excluded
+        'heads.domain2.weight': torch.ones(10, 512),  # Phi - should be excluded
+    }
+
+    state2 = {k: v * 2 for k, v in state1.items()}
+
+    states = [state1, state2]
+    weights = [0.5, 0.5]
+
+    # Aggregate theta
+    result = aggregate_theta(states, weights)
+
+    # Verify only theta parameters are included
+    assert 'conv1.weight' in result, "Backbone conv should be in theta"
+    assert 'layer1.0.conv1.weight' in result, "Backbone layer should be in theta"
+    assert 'bn1.weight' in result, "Backbone BN should be in theta"
+    assert 'lora_blocks.0.weight' not in result, "LoRA blocks should not be in theta"
+    assert 'lora_blocks.0.bias' not in result, "LoRA bias should not be in theta"
+    assert 'heads.domain1.weight' not in result, "Domain1 head should not be in theta"
+    assert 'heads.domain2.weight' not in result, "Domain2 head should not be in theta"

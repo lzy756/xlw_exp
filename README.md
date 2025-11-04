@@ -42,6 +42,25 @@ python run_experiment.py --config configs/default.yaml
 
 # Or use the convenience script
 bash scripts/run_default.sh
+
+# Quick validation (2 domains, 3 rounds)
+bash scripts/validate_quickstart.sh
+```
+
+### Configuration Options
+
+```bash
+# Override specific settings
+python run_experiment.py \
+    --config configs/default.yaml \
+    --domains clipart real \
+    --rounds 50 \
+    --device cuda
+
+# Custom experiment tag
+python run_experiment.py \
+    --config configs/default.yaml \
+    --exp-tag my-experiment
 ```
 
 ### Monitoring
@@ -86,8 +105,54 @@ bash scripts/run_default.sh
 pytest tests/
 
 # Run with coverage
-pytest tests/ --cov=core --cov=data --cov=models
+pytest tests/ --cov=core --cov=data --cov=models --cov-report=term
+
+# Run specific test modules
+pytest tests/test_selector.py -v
+pytest tests/test_edge_manager.py -v
+pytest tests/test_integration.py -v
 ```
+
+## Visualization
+
+```bash
+# Generate all visualizations from experiment log
+python scripts/visualize_results.py \
+    --log outputs/my-experiment/train.log \
+    --output-dir outputs/my-experiment/plots
+
+# Visualize drift heatmap only
+python scripts/visualize_drift.py \
+    --log outputs/my-experiment/train.log \
+    --output outputs/my-experiment/drift.png
+```
+
+## Troubleshooting
+
+### Common Issues
+
+**CUDA Out of Memory**
+- Reduce `batch_size` in config (try 16 or 8)
+- Reduce number of domains or clients
+- Use smaller LoRA rank
+
+**Dataset Not Found**
+- Ensure DomainNet is downloaded and extracted
+- Update `data.root` in config to correct path
+- Run `scripts/prepare_domainnet.sh` if needed
+
+**Slow Training**
+- Enable `pretrained: true` for faster convergence
+- Reduce `total_rounds` for initial testing
+- Use `--device cuda` if available
+
+**Import Errors**
+- Ensure virtual environment is activated: `source .venv/bin/activate`
+- Reinstall dependencies: `uv sync`
+
+### Getting Help
+
+For detailed setup and usage, see [quickstart.md](specs/001-fl-domainnet-fap-lora/quickstart.md)
 
 ## Citation
 

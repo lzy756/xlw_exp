@@ -137,3 +137,99 @@ def test_build_domain_clients():
     train_total = total_local + total_unload
     actual_ratio = total_unload / train_total
     assert abs(actual_ratio - 0.2) < 0.05, f"Offload ratio {actual_ratio} far from 0.2"
+
+
+def test_offload_ratio_enforcement():
+    """Test that offload ratio is enforced correctly for different ρ values."""
+    # Create dummy index
+    index = {
+        'samples': [
+            {'domain': 'real', 'label': i % 10, 'path': f'real/img_{i}.jpg'}
+            for i in range(1000)
+        ],
+        'domains': ['real'],
+        'num_classes': 10
+    }
+
+    # Test different offload ratios
+    for unload_ratio in [0.0, 0.1, 0.2, 0.4]:
+        result = build_domain_clients(
+            index=index,
+            domain='real',
+            num_clients=10,
+            alpha=0.5,
+            unload_ratio=unload_ratio,
+            val_ratio=0.1,
+            seed=42
+        )
+
+        # Calculate actual offload ratio
+        total_local = sum(len(client['local']) for client in result['clients'].values())
+        total_unload = sum(len(client['unload']) for client in result['clients'].values())
+        total_dc_pool = len(result['dc_unload_pool'])
+
+        # DC pool should equal sum of client unloads
+        assert total_dc_pool == total_unload, \
+            f"DC pool size {total_dc_pool} != sum of unloads {total_unload}"
+
+        # Check ratio
+        if total_local + total_unload > 0:
+            actual_ratio = total_unload / (total_local + total_unload)
+            assert abs(actual_ratio - unload_ratio) < 0.05, \
+                f"Ratio ρ={unload_ratio}: expected {unload_ratio}, got {actual_ratio}"
+
+        # If ratio is 0, no offloading should occur
+        if unload_ratio == 0.0:
+            assert total_unload == 0, "No offloading should occur when ρ=0"
+            assert total_dc_pool == 0, "DC pool should be empty when ρ=0"
+
+
+def test_offload_pool_aggregation():
+    """Test that DC offload pool correctly aggregates data from all clients."""
+    # Create dummy index
+    index = {
+        'samples': [
+            {'domain': 'sketch', 'label': i % 5, 'path': f'sketch/img_{i}.jpg'}
+            for i in range(500)
+        ],
+        'domains': ['sketch'],
+        'num_classes': 5
+    }
+
+    result = build_domain_clients(
+        index=index,
+        domain='sketch',
+        num_clients=8,
+        alpha=0.3,
+        unload_ratio=0.2,
+        val_ratio=0.15,
+        seed=42
+    )
+
+    # Collect all unloaded indices from clients
+    client_unload_indices = []
+    for client_data in result['clients'].values():
+        client_unload_indices.extend(client_data['unload'])
+
+    # DC pool should contain exactly these indices
+    dc_pool = result['dc_unload_pool']
+
+    assert len(dc_pool) == len(client_unload_indices), \
+        f"DC pool size {len(dc_pool)} != total client unloads {len(client_unload_indices)}"
+
+    # All indices should match
+    assert set(dc_pool) == set(client_unload_indices), \
+        "DC pool indices don't match client unload indices"
+
+    # Verify offloaded data is excluded from local sets
+    for client_data in result['clients'].values():
+        local_set = set(client_data['local'])
+        unload_set = set(client_data['unload'])
+
+        # No overlap between local and unload
+        assert len(local_set & unload_set) == 0, \
+            "Client has overlap between local and offload data"
+
+        # All unloaded indices should be in DC pool
+        assert unload_set.issubset(set(dc_pool)), \
+            "Client offload data not in DC pool"

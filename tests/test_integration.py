@@ -437,8 +437,82 @@ def test_selection_every_K_rounds():
     print("\nSelection test passed!")
 
 
+def test_dc_offload_training():
+    """Test DC offload pool training comparing ρ=0 vs ρ=0.2."""
+    set_seed(42)
+    config = create_test_config()
+
+    # Test with two different offload ratios
+    for unload_ratio in [0.0, 0.2]:
+        # Update config
+        config['partition']['unload_ratio'] = unload_ratio
+
+        # Create dataset index
+        index = {
+            'domains': config['data']['domains'],
+            'num_classes': config['data']['num_classes'],
+            'samples': []
+        }
+
+        # Add samples
+        for domain in config['data']['domains']:
+            for class_id in range(config['data']['num_classes']):
+                for sample_id in range(30):
+                    index['samples'].append({
+                        'path': f'{domain}/class_{class_id}/sample_{sample_id}.jpg',
+                        'label': class_id,
+                        'domain': domain
+                    })
+
+        # Save index
+        index_path = os.path.join(config['data']['root'], 'index.json')
+        with open(index_path, 'w') as f:
+            json.dump(index, f)
+
+        # Build domain clients
+        domain = config['data']['domains'][0]
+        domain_data = build_domain_clients(
+            index=index,
+            domain=domain,
+            num_clients=config['partition']['num_clients_per_domain'],
+            alpha=config['partition']['alpha'],
+            unload_ratio=unload_ratio,
+            val_ratio=config['partition']['val_ratio'],
+            seed=config['partition']['seed']
+        )
+
+        # Check DC pool
+        dc_pool = domain_data.get('dc_unload_pool', [])
+
+        if unload_ratio == 0.0:
+            # No offloading
+            assert len(dc_pool) == 0, f"DC pool should be empty when ρ=0, got {len(dc_pool)}"
+            print(f"✓ ρ={unload_ratio}: DC pool empty as expected")
+        else:
+            # Has offloading
+            assert len(dc_pool) > 0, f"DC pool should have data when ρ={unload_ratio}"
+
+            # Calculate total training data
+            total_local = sum(len(client['local']) for client in domain_data['clients'].values())
+            total_unload = sum(len(client['unload']) for client in domain_data['clients'].values())
+
+            # Check ratio
+            actual_ratio = total_unload / (total_local + total_unload)
+            assert abs(actual_ratio - unload_ratio) < 0.05, \
+                f"Expected ratio {unload_ratio}, got {actual_ratio}"
+
+            # Check DC pool size matches
+            assert len(dc_pool) == total_unload, \
+                f"DC pool size {len(dc_pool)} != total unload {total_unload}"
+
+            print(f"✓ ρ={unload_ratio}: DC pool has {len(dc_pool)} samples (ratio={actual_ratio:.3f})")
+
+    print("\n✓ DC offload training test passed!")
+
+
 if __name__ == '__main__':
     test_full_round_2_domains_4_clients()
     test_domain_phi_isolation()
     test_selection_every_K_rounds()
+    test_dc_offload_training()
     print("All integration tests passed!")
