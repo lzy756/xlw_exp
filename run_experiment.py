@@ -10,6 +10,7 @@ import torch
 import yaml
 
 from models.resnet18_lora import ResNet18_EAPH
+from models.resnet50_lora import ResNet50_EAPH
 from data.domainnet import DomainNetDataset
 from data.partition import build_domain_clients
 from core.trainer import LocalTrainer
@@ -32,6 +33,42 @@ def load_config(config_path: str) -> Dict:
     with open(config_path, 'r') as f:
         config = yaml.safe_load(f)
     return config
+
+
+def create_model(config: Dict):
+    """Factory for creating backbone models.
+
+    Args:
+        config: Configuration dictionary
+
+    Returns:
+        Model instance (ResNet18_EAPH or ResNet50_EAPH)
+
+    Raises:
+        ValueError: If backbone is not supported
+    """
+    backbone = config['model'].get('backbone', 'resnet18')
+    
+    if backbone == 'resnet18':
+        return ResNet18_EAPH(
+            num_classes=config['data']['num_classes'],
+            domains=config['data']['domains'],
+            lora_rank=config['model']['lora']['rank'],
+            lora_alpha=config['model']['lora']['alpha'],
+            pretrained=config['model']['pretrained']
+        )
+    elif backbone == 'resnet50':
+        return ResNet50_EAPH(
+            num_classes=config['data']['num_classes'],
+            domains=config['data']['domains'],
+            lora_rank=config['model']['lora']['rank'],
+            lora_alpha=config['model']['lora']['alpha'],
+            pretrained=config['model']['pretrained']
+        )
+    else:
+        raise ValueError(
+            f"Unsupported backbone: {backbone}. Choose 'resnet18' or 'resnet50'."
+        )
 
 
 def prepare_data(config: Dict) -> tuple:
@@ -188,13 +225,7 @@ def main():
 
         # Initialize model
         logger.info("Initializing model...")
-        model = ResNet18_EAPH(
-            num_classes=config['data']['num_classes'],
-            domains=config['data']['domains'],
-            lora_rank=config['model']['lora']['rank'],
-            lora_alpha=config['model']['lora']['alpha'],
-            pretrained=config['model']['pretrained']
-        )
+        model = create_model(config)
 
         # Initialize components
         trainer = LocalTrainer(

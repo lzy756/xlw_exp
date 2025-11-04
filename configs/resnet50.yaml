@@ -1,5 +1,5 @@
 # FL-DomainNet-FAP-LoRA Configuration
-# Default hyperparameters for federated learning experiment
+# ResNet-50 optimized hyperparameters for federated learning experiment
 
 # Dataset
 data:
@@ -19,18 +19,18 @@ partition:
 
 # Model architecture
 model:
-  backbone: "resnet18"  # Backbone model: "resnet18" or "resnet50"
+  backbone: "resnet50"  # Use ResNet-50 backbone (2048-d features)
   pretrained: true
   lora:
     rank: 16  # r: LoRA rank
-    alpha: 16  # α: LoRA scaling factor (alpha/r)
-    attach_layers: ["layer4"]  # Attach LoRA to ResNet-18's layer4
+    alpha: 32  # α: LoRA scaling factor (increased from 16 for ResNet-50)
+    attach_layers: ["layer4"]  # Attach LoRA to ResNet-50's layer4 Bottleneck blocks (conv3)
 
 # Training
 training:
   total_rounds: 200
   local_steps: 5  # Local training steps per client
-  batch_size: 32
+  batch_size: 48  # Reduced from 64 to accommodate ~30% higher memory usage
   clients_participation: 0.2  # Fraction of clients participating per round
 
   # Learning rates
@@ -72,3 +72,10 @@ system:
   device: "cuda"  # Device for training (cuda/cpu)
   seed: 42       # Random seed for reproducibility
   num_workers: 4  # DataLoader workers
+
+# Notes:
+# - ResNet-50 uses 2048-d features (vs 512-d for ResNet-18)
+# - LoRA alpha increased to 32 (from 16) to match increased model capacity
+# - Batch size reduced to 48 (from 64) to accommodate higher memory usage (~18-20GB VRAM)
+# - Requires 16GB+ GPU memory (24GB recommended for comfortable operation)
+# - For memory-constrained GPUs, reduce batch_size to 32 or use gradient accumulation

@@ -50,8 +50,10 @@ class EdgeManager:
 
         # Prototype tracking
         # Fixed random projection matrix (deterministic with seed=0)
+        # Auto-detect feature dimension from model
+        feature_dim = model.feature_dim if hasattr(model, 'feature_dim') else 512
         torch.manual_seed(0)
-        self.proj = torch.randn(512, proj_dim, device=device) / math.sqrt(512)
+        self.proj = torch.randn(feature_dim, proj_dim, device=device) / math.sqrt(feature_dim)
 
         # Prototype accumulators
         self.proto_sum: Dict[str, torch.Tensor] = {

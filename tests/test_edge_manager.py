@@ -9,9 +9,14 @@ from core.edge_manager import EdgeManager
 class DummyModel(nn.Module):
     """Dummy model for testing."""
 
-    def __init__(self):
+    def __init__(self, feature_dim=512):
         super().__init__()
-        self.fc = nn.Linear(512, 10)
+        self._feature_dim = feature_dim
+        self.fc = nn.Linear(feature_dim, 10)
+
+    @property
+    def feature_dim(self):
+        return self._feature_dim
 
     def forward(self, x):
         return self.fc(x)
@@ -323,3 +328,104 @@ def test_end_round_with_aggregator():
     # domain2 doesn't get it (not selected twice in a row)
     assert edge_manager.stay_bonus['domain2'] == 0.0
     assert edge_manager.stay_bonus['domain3'] == 0.0
+
+
+def test_edge_manager_with_resnet50_features():
+    """Test that EdgeManager works with ResNet50 2048-d features."""
+    model = DummyModel(feature_dim=2048)
+    domains = ['domain1', 'domain2']
+
+    edge_manager = EdgeManager(
+        model=model,
+        domains=domains,
+        num_classes=10,
+        proj_dim=64,
+        device='cpu'
+    )
+
+    # Check that projection matrix has correct shape for 2048-d features
+    assert edge_manager.proj.shape == (2048, 64), \
+        f"Expected projection shape (2048, 64), got {edge_manager.proj.shape}"
+
+    # Test prototype accumulation with 2048-d features
+    batch_size = 5
+    feats = torch.randn(batch_size, 2048)
+    labels = torch.tensor([0, 0, 1, 1, 2])
+
+    # This should work without errors
+    L_e = edge_manager.update_eval_stats(
+        domain='domain1',
+        val_loss=0.5,
+        feats=feats,
+        labels=labels,
+        tau=1.0
+    )
+
+    assert L_e == 0.5
+    assert edge_manager.proto_cnt['domain1'][0] == 2.0
+    assert edge_manager.proto_cnt['domain1'][1] == 2.0
+    assert edge_manager.proto_cnt['domain1'][2] == 1.0
+
+    print(f"✓ EdgeManager works with 2048-d features")
+
+
+def test_edge_manager_backward_compatible_resnet18():
+    """Test that EdgeManager still works with ResNet18 512-d features."""
+    model = DummyModel(feature_dim=512)
+    domains = ['domain1', 'domain2']
+
+    edge_manager = EdgeManager(
+        model=model,
+        domains=domains,
+        num_classes=10,
+        proj_dim=64,
+        device='cpu'
+    )
+
+    # Check projection matrix shape
+    assert edge_manager.proj.shape == (512, 64), \
+        f"Expected projection shape (512, 64), got {edge_manager.proj.shape}"
+
+    # Test with 512-d features
+    batch_size = 5
+    feats = torch.randn(batch_size, 512)
+    labels = torch.tensor([0, 0, 1, 1, 2])
+
+    L_e = edge_manager.update_eval_stats(
+        domain='domain1',
+        val_loss=0.5,
+        feats=feats,
+        labels=labels,
+        tau=1.0
+    )
+
+    assert L_e == 0.5
+
+    print(f"✓ EdgeManager backward compatible with 512-d features")
+
+
+def test_edge_manager_auto_detect_feature_dim():
+    """Test that EdgeManager auto-detects feature dimension from model."""
+    # Test with 512-d model
+    model_512 = DummyModel(feature_dim=512)
+    edge_manager_512 = EdgeManager(
+        model=model_512,
+        domains=['domain1'],
+        num_classes=10,
+        proj_dim=64,
+        device='cpu'
+    )
+    assert edge_manager_512.proj.shape[0] == 512
+
+    # Test with 2048-d model
+    model_2048 = DummyModel(feature_dim=2048)
+    edge_manager_2048 = EdgeManager(
+        model=model_2048,
+        domains=['domain1'],
+        num_classes=10,
+        proj_dim=64,
+        device='cpu'
+    )
+    assert edge_manager_2048.proj.shape[0] == 2048
+
+    print(f"✓ EdgeManager auto-detects feature dimension correctly")

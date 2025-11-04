@@ -1,4 +1,4 @@
-"""ResNet18 with EAPH-LoRA implementation."""
+"""ResNet50 with EAPH-LoRA implementation."""
 
 import math
 from typing import Dict, List, Optional, Tuple
@@ -69,10 +69,12 @@ class LoRAConv2d(nn.Module):
         return self.lora_up(self.lora_down(x)) * self.scaling
 
 
-class ResNet18_EAPH(nn.Module):
-    """ResNet18 with EAPH-LoRA for domain-specific personalization.
+class ResNet50_EAPH(nn.Module):
+    """ResNet50 with EAPH-LoRA for domain-specific personalization.
 
-    Attaches LoRA modules to layer4 and creates domain-specific heads.
+    Attaches LoRA modules to layer4 Bottleneck blocks (conv3 path) and creates
+    domain-specific heads. ResNet50 uses Bottleneck architecture with conv1->conv2->conv3,
+    where conv3 is the final convolution before residual addition.
     """
 
     def __init__(
@@ -80,16 +82,16 @@ class ResNet18_EAPH(nn.Module):
         num_classes: int = 126,
         domains: List[str] = None,
         lora_rank: int = 16,
-        lora_alpha: float = 16.0,
+        lora_alpha: float = 32.0,
         pretrained: bool = True
     ):
-        """Initialize ResNet18 with EAPH-LoRA.
+        """Initialize ResNet50 with EAPH-LoRA.
 
         Args:
             num_classes: Number of output classes
             domains: List of domain names
             lora_rank: LoRA rank
-            lora_alpha: LoRA scaling factor
+            lora_alpha: LoRA scaling factor (default 32.0 for ResNet50)
             pretrained: Whether to load pretrained weights
         """
         super().__init__()
@@ -102,8 +104,8 @@ class ResNet18_EAPH(nn.Module):
         self.lora_rank = lora_rank
         self.lora_alpha = lora_alpha
 
-        # Load pretrained ResNet18
-        resnet = models.resnet18(pretrained=pretrained)
+        # Load pretrained ResNet50
+        resnet = models.resnet50(pretrained=pretrained)
 
         # Extract layers (freeze pretrained backbone initially)
         self.conv1 = resnet.conv1
@@ -116,11 +118,11 @@ class ResNet18_EAPH(nn.Module):
         self.layer4 = resnet.layer4
         self.avgpool = resnet.avgpool
 
-        # Feature dimension from ResNet18
-        self._feature_dim = 512
+        # Feature dimension from ResNet50
+        self._feature_dim = 2048
 
         # Attach LoRA to layer4
-        self.lora_blocks = nn.ModuleDict()
+        self.lora_blocks = nn.ModuleList()
         self._attach_lora_to_layer4()
 
         # Create domain-specific classification heads
@@ -139,37 +141,30 @@ class ResNet18_EAPH(nn.Module):
         """Get feature dimension for EdgeManager compatibility.
 
         Returns:
-            Feature dimension (512 for ResNet18)
+            Feature dimension (2048 for ResNet50)
         """
         return self._feature_dim
 
     def _attach_lora_to_layer4(self):
-        """Attach LoRA adapters to layer4 convolutions."""
-        # ResNet18 layer4 has 2 BasicBlocks, each with 2 conv layers
-        for block_idx, block in enumerate(self.layer4):
-            # Attach to conv1 of each block
-            conv1 = block.conv1
-            self.lora_blocks[f'layer4_{block_idx}_conv1'] = LoRAConv2d(
-                in_channels=conv1.in_channels,
-                out_channels=conv1.out_channels,
-                kernel_size=conv1.kernel_size[0],
-                rank=self.lora_rank,
-                alpha=self.lora_alpha,
-                stride=conv1.stride[0],
-                padding=conv1.padding[0]
-            )
+        """Attach LoRA adapters to layer4 conv3 (final convolution in Bottleneck).
 
-            # Attach to conv2 of each block
-            conv2 = block.conv2
-            self.lora_blocks[f'layer4_{block_idx}_conv2'] = LoRAConv2d(
-                in_channels=conv2.in_channels,
-                out_channels=conv2.out_channels,
-                kernel_size=conv2.kernel_size[0],
+        ResNet50 layer4 has 3 Bottleneck blocks. Each Bottleneck has conv1->conv2->conv3.
+        We attach LoRA to conv3 output, which is the final convolution before residual addition.
+        """
+        # ResNet50 layer4 has 3 Bottleneck blocks
+        for block_idx, block in enumerate(self.layer4):
+            # Attach to conv3 of each Bottleneck block
+            conv3 = block.conv3
+            lora_module = LoRAConv2d(
+                in_channels=conv3.in_channels,
+                out_channels=conv3.out_channels,
+                kernel_size=conv3.kernel_size[0],
                 rank=self.lora_rank,
                 alpha=self.lora_alpha,
-                stride=conv2.stride[0],
-                padding=conv2.padding[0]
+                stride=conv3.stride[0],
+                padding=conv3.padding[0]
             )
+            self.lora_blocks.append(lora_module)
 
     def forward_features(self, x: torch.Tensor) -> torch.Tensor:
         """Extract features before classification head.
@@ -178,9 +173,9 @@ class ResNet18_EAPH(nn.Module):
             x: Input tensor
 
         Returns:
-            512-dimensional feature vector
+            2048-dimensional feature vector
         """
-        # Standard ResNet forward until avgpool
+        # Standard ResNet forward until layer3
         x = self.conv1(x)
         x = self.bn1(x)
         x = self.relu(x)
@@ -190,28 +185,34 @@ class ResNet18_EAPH(nn.Module):
         x = self.layer2(x)
         x = self.layer3(x)
 
-        # Layer4 with LoRA adaptation
+        # Layer4 with LoRA adaptation on conv3
         for block_idx, block in enumerate(self.layer4):
             identity = x
 
-            # First conv with LoRA
+            # Bottleneck forward: conv1 -> bn1 -> relu
             out = block.conv1(x)
-            if f'layer4_{block_idx}_conv1' in self.lora_blocks:
-                out = out + self.lora_blocks[f'layer4_{block_idx}_conv1'](x)
             out = block.bn1(out)
             out = block.relu(out)
 
-            # Second conv with LoRA
-            conv2_input = out
+            # conv2 -> bn2 -> relu
             out = block.conv2(out)
-            if f'layer4_{block_idx}_conv2' in self.lora_blocks:
-                out = out + self.lora_blocks[f'layer4_{block_idx}_conv2'](conv2_input)
             out = block.bn2(out)
+            out = block.relu(out)
+
+            # conv3 -> bn3 with LoRA adaptation
+            conv3_input = out
+            out = block.conv3(out)
+            out = block.bn3(out)
+            
+            # Add LoRA residual to conv3 output (before final relu)
+            if block_idx < len(self.lora_blocks):
+                out = out + self.lora_blocks[block_idx](conv3_input)
 
             # Handle downsample if present
             if block.downsample is not None:
                 identity = block.downsample(x)
 
+            # Residual connection and final relu
             out += identity
             out = block.relu(out)
             x = out

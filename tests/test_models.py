@@ -4,6 +4,7 @@ import pytest
 import torch
 import torch.nn as nn
 from models.resnet18_lora import LoRAConv2d, ResNet18_EAPH
+from models.resnet50_lora import ResNet50_EAPH
 
 
 def test_lora_conv2d_residual_path():
@@ -280,7 +281,238 @@ def test_model_forward_with_domain():
     print(f"✓ Forward pass works for all domains")
 
 
+def test_resnet50_instantiation():
+    """Test that ResNet50_EAPH can be instantiated with various configs."""
+    num_classes = 10
+    domains = ['domain1', 'domain2']
+    lora_rank = 8
+    lora_alpha = 32.0
+
+    model = ResNet50_EAPH(
+        num_classes=num_classes,
+        domains=domains,
+        lora_rank=lora_rank,
+        lora_alpha=lora_alpha,
+        pretrained=False
+    )
+
+    assert model is not None, "Model should be instantiated"
+    assert model.num_classes == num_classes
+    assert model.domains == domains
+    assert model.lora_rank == lora_rank
+    assert model.lora_alpha == lora_alpha
+
+    print(f"✓ ResNet50_EAPH instantiated successfully")
+
+
+def test_resnet50_feature_dim():
+    """Test that ResNet50 outputs 2048-d features."""
+    num_classes = 10
+    domains = ['domain1']
+    
+    model = ResNet50_EAPH(
+        num_classes=num_classes,
+        domains=domains,
+        pretrained=False
+    )
+
+    # Test feature_dim property
+    assert hasattr(model, 'feature_dim'), "Model should have feature_dim property"
+    assert model.feature_dim == 2048, f"ResNet50 should have 2048-d features, got {model.feature_dim}"
+
+    # Test forward_features output
+    batch_size = 2
+    x = torch.randn(batch_size, 3, 224, 224)
+
+    with torch.no_grad():
+        features = model.forward_features(x)
+
+    expected_shape = (batch_size, 2048)
+    assert features.shape == expected_shape, \
+        f"Expected feature shape {expected_shape}, got {features.shape}"
+
+    print(f"✓ ResNet50 produces 2048-d features correctly")
+
+
+def test_resnet50_lora_injection():
+    """Test that ResNet50 has LoRA modules attached to layer4 Bottleneck blocks."""
+    num_classes = 10
+    domains = ['domain1', 'domain2']
+    
+    model = ResNet50_EAPH(
+        num_classes=num_classes,
+        domains=domains,
+        pretrained=False
+    )
+
+    # ResNet50 layer4 has 3 Bottleneck blocks
+    # Each should have 1 LoRA module (attached to conv3)
+    assert hasattr(model, 'lora_blocks'), "Model should have lora_blocks"
+    assert len(model.lora_blocks) == 3, f"ResNet50 should have 3 LoRA modules (one per Bottleneck), got {len(model.lora_blocks)}"
+
+    # Check that each is a LoRAConv2d
+    from models.resnet50_lora import LoRAConv2d as LoRAConv2d50
+    for i, lora_module in enumerate(model.lora_blocks):
+        assert isinstance(lora_module, LoRAConv2d50), \
+            f"LoRA block {i} should be LoRAConv2d, got {type(lora_module)}"
+
+    print(f"✓ ResNet50 has 3 LoRA modules attached to layer4")
+
+
+def test_resnet50_parameters_theta():
+    """Test that ResNet50 parameters_theta excludes LoRA and heads."""
+    num_classes = 10
+    domains = ['domain1', 'domain2']
+    
+    model = ResNet50_EAPH(
+        num_classes=num_classes,
+        domains=domains,
+        pretrained=False
+    )
+
+    theta_params = list(model.parameters_theta())
+    theta_param_ids = {id(p) for p in theta_params}
+
+    # Check that no LoRA or head parameters are included
+    for name, param in model.named_parameters():
+        if 'lora_blocks' in name or 'heads' in name:
+            assert id(param) not in theta_param_ids, \
+                f"Parameter {name} should not be in theta parameters"
+        else:
+            assert id(param) in theta_param_ids, \
+                f"Parameter {name} should be in theta parameters"
+
+    assert len(theta_params) > 0, "Theta parameters should not be empty"
+
+    print(f"✓ ResNet50 theta has {len(theta_params)} parameters (excluding LoRA and heads)")
+
+
+def test_resnet50_parameters_phi():
+    """Test that ResNet50 parameters_phi includes LoRA and domain head."""
+    num_classes = 10
+    domains = ['domain1', 'domain2']
+    
+    model = ResNet50_EAPH(
+        num_classes=num_classes,
+        domains=domains,
+        pretrained=False
+    )
+
+    for domain in domains:
+        phi_params = list(model.parameters_phi(domain))
+        phi_param_ids = {id(p) for p in phi_params}
+
+        lora_found = False
+        head_found = False
+
+        for name, param in model.named_parameters():
+            if 'lora_blocks' in name:
+                assert id(param) in phi_param_ids, \
+                    f"LoRA parameter {name} should be in phi parameters for {domain}"
+                lora_found = True
+            elif f'heads.{domain}' in name:
+                assert id(param) in phi_param_ids, \
+                    f"Head parameter {name} should be in phi parameters for {domain}"
+                head_found = True
+
+        assert lora_found, f"LoRA parameters should be in phi for {domain}"
+        assert head_found, f"Domain head should be in phi for {domain}"
+
+        print(f"✓ ResNet50 phi for {domain} has {len(phi_params)} parameters")
+
+
+def test_resnet50_forward():
+    """Test that ResNet50 forward pass works with domain specification."""
+    num_classes = 10
+    domains = ['domain1', 'domain2']
+    
+    model = ResNet50_EAPH(
+        num_classes=num_classes,
+        domains=domains,
+        pretrained=False
+    )
+
+    batch_size = 2
+    x = torch.randn(batch_size, 3, 224, 224)
+
+    for domain in domains:
+        with torch.no_grad():
+            output = model(x, domain=domain)
+
+        expected_shape = (batch_size, num_classes)
+        assert output.shape == expected_shape, \
+            f"Expected output shape {expected_shape} for {domain}, got {output.shape}"
+
+    print(f"✓ ResNet50 forward pass works for all domains")
+
+
+def test_resnet50_gradient_flow():
+    """Test that gradients flow through LoRA modules in ResNet50."""
+    num_classes = 10
+    domains = ['domain1']
+    
+    model = ResNet50_EAPH(
+        num_classes=num_classes,
+        domains=domains,
+        pretrained=False
+    )
+
+    # Initialize lora_up weights to non-zero values to test gradient flow
+    for lora_module in model.lora_blocks:
+        lora_module.lora_up.weight.data.normal_(0, 0.01)
+
+    # Create dummy input and target
+    batch_size = 2
+    x = torch.randn(batch_size, 3, 224, 224)
+    target = torch.randint(0, num_classes, (batch_size,))
+
+    # Forward pass
+    output = model(x, domain=domains[0])
+    loss = torch.nn.functional.cross_entropy(output, target)
+
+    # Backward pass
+    loss.backward()
+
+    # Check that LoRA parameters have gradients
+    lora_params_with_grad = 0
+    for name, param in model.named_parameters():
+        if 'lora_blocks' in name:
+            assert param.grad is not None, \
+                f"LoRA parameter {name} should have gradient"
+            # Check if gradient has non-zero values
+            if torch.abs(param.grad).sum() > 1e-10:
+                lora_params_with_grad += 1
+
+    # At least some LoRA parameters should have non-zero gradients
+    assert lora_params_with_grad > 0, "At least some LoRA parameters should have non-zero gradients"
+
+    print(f"✓ Gradients flow through ResNet50 LoRA modules ({lora_params_with_grad} params with non-zero grads)")
+
+
+def test_resnet50_domain_heads():
+    """Test that ResNet50 has correct domain-specific heads."""
+    num_classes = 10
+    domains = ['domain1', 'domain2', 'domain3']
+    
+    model = ResNet50_EAPH(
+        num_classes=num_classes,
+        domains=domains,
+        pretrained=False
+    )
+
+    # Check heads exist
+    for domain in domains:
+        assert hasattr(model.heads, domain), f"Model should have head for {domain}"
+        head = getattr(model.heads, domain)
+        assert isinstance(head, nn.Linear), f"Head for {domain} should be Linear"
+        assert head.in_features == 2048, f"Head should accept 2048-d features"
+        assert head.out_features == num_classes, f"Head should output {num_classes} classes"
+
+    print(f"✓ ResNet50 has correct domain-specific heads (2048→{num_classes})")
+
+
 if __name__ == '__main__':
+    # ResNet18 tests
     test_lora_conv2d_residual_path()
     test_parameters_theta_excludes_lora()
     test_parameters_phi_includes_lora()
@@ -288,4 +520,16 @@ if __name__ == '__main__':
     test_domain_heads_separate()
     test_lora_blocks_shared()
     test_model_forward_with_domain()
+    
+    # ResNet50 tests
+    print("\n--- ResNet50 Tests ---")
+    test_resnet50_instantiation()
+    test_resnet50_feature_dim()
+    test_resnet50_lora_injection()
+    test_resnet50_parameters_theta()
+    test_resnet50_parameters_phi()
+    test_resnet50_forward()
+    test_resnet50_gradient_flow()
+    test_resnet50_domain_heads()
+    
     print("\nAll model tests passed!")
