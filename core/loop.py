@@ -171,10 +171,10 @@ def calibrate_on_dc(
     mu = cal_cfg.get('mu', 0.01)
     lr = cal_cfg.get('lr')
     if lr is None:
-        lr = cfg['training'].get('lr_theta', 0.0003)
+        lr = cfg.get('training', {}).get('lr_theta', 0.0003)
     freeze_phi = cal_cfg.get('freeze_phi', True)
     min_samples = cal_cfg.get('min_samples', 100)
-    device = cfg['system']['device']
+    device = cfg.get('system', {}).get('device', 'cpu')
     
     # Early exit: check if offload pool enabled
     if not cfg.get('data', {}).get('offload_pool_enabled', False):
@@ -217,10 +217,15 @@ def calibrate_on_dc(
     ]
     
     # Create optimizer for theta only
-    optimizer = optim.AdamW(theta_params, lr=lr, weight_decay=cfg['training'].get('weight_decay', 0.0001))
+    optimizer = optim.AdamW(theta_params, lr=lr, weight_decay=cfg.get('training', {}).get('weight_decay', 0.0001))
     
-    # Vectorize initial theta for proximal term
-    theta_init_vec = _vectorize_theta(theta_avg).to(device)
+    # Vectorize initial theta for proximal term (extract from loaded model, not theta_avg)
+    # This includes all model buffers and parameters (e.g., BatchNorm running stats)
+    theta_init_state = {
+        k: v.clone() for k, v in model.state_dict().items()
+        if 'heads.' not in k and 'lora_blocks.' not in k
+    }
+    theta_init_vec = _vectorize_theta(theta_init_state).to(device)
     
     # Create DataLoader
     dataloader = env.build_loader(dc_dataset, batch_size, train=True)

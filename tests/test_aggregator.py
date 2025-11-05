@@ -2,7 +2,14 @@
 
 import pytest
 import torch
-from core.aggregator import fedavg, aggregate_theta, aggregate_phi_domain
+import numpy as np
+from core.aggregator import (
+    fedavg, 
+    aggregate_theta, 
+    aggregate_phi_domain,
+    _normalize_scores,
+    aggregate_theta_weighted
+)
 
 
 def test_fedavg_weighted_average():
@@ -172,3 +179,254 @@ def test_aggregate_theta_excludes_phi_keys():
     assert 'lora_blocks.0.bias' not in result, "LoRA bias should not be in theta"
     assert 'heads.domain1.weight' not in result, "Domain1 head should not be in theta"
     assert 'heads.domain2.weight' not in result, "Domain2 head should not be in theta"
+
+
+# ============================================================================
+# Tests for Fair-Weighted Aggregation
+# ============================================================================
+
+def test_normalize_scores_zscore():
+    """Test z-score normalization of scores."""
+    scores = np.array([1.0, 2.0, 3.0, 4.0, 5.0])
+    
+    normalized = _normalize_scores(scores, mode='zscore')
+    
+    # Z-score should have mean=0, std=1
+    assert abs(np.mean(normalized)) < 1e-6, "Z-score mean should be ~0"
+    assert abs(np.std(normalized) - 1.0) < 1e-6, "Z-score std should be ~1"
+
+
+def test_normalize_scores_minmax():
+    """Test min-max normalization of scores."""
+    scores = np.array([1.0, 2.0, 3.0, 4.0, 5.0])
+    
+    normalized = _normalize_scores(scores, mode='minmax')
+    
+    # Min-max should be in [0, 1]
+    assert normalized.min() == 0.0, "Min should be 0"
+    assert normalized.max() == 1.0, "Max should be 1"
+    assert np.array_equal(normalized, np.array([0.0, 0.25, 0.5, 0.75, 1.0]))
+
+
+def test_normalize_scores_zero_variance():
+    """Test normalization with zero variance (all same values)."""
+    scores = np.array([2.0, 2.0, 2.0])
+    
+    # Z-score with zero variance should return zeros
+    normalized_z = _normalize_scores(scores, mode='zscore')
+    assert np.allclose(normalized_z, np.zeros(3))
+    
+    # Min-max with zero range should return zeros
+    normalized_mm = _normalize_scores(scores, mode='minmax')
+    assert np.allclose(normalized_mm, np.zeros(3))
+
+
+def test_normalize_scores_invalid_mode():
+    """Test that invalid normalization mode raises error."""
+    scores = np.array([1.0, 2.0, 3.0])
+    
+    with pytest.raises(ValueError, match="Unknown normalization mode"):
+        _normalize_scores(scores, mode='invalid')
+
+
+def test_aggregate_theta_weighted_basic():
+    """Test basic fair-weighted aggregation."""
+    # Create dummy theta states for 3 domains
+    theta1 = {'conv.weight': torch.tensor([1.0, 1.0, 1.0])}
+    theta2 = {'conv.weight': torch.tensor([2.0, 2.0, 2.0])}
+    theta3 = {'conv.weight': torch.tensor([3.0, 3.0, 3.0])}
+    
+    theta_list = [theta1, theta2, theta3]
+    domains = ['d1', 'd2', 'd3']
+    n_map = {'d1': 100, 'd2': 200, 'd3': 300}  # Sample counts
+    score_map = {'d1': 0.5, 'd2': 0.6, 'd3': 0.7}  # Higher score = worse performance
+    agg_domain = 'd2'
+    
+    config = {
+        'fair_weighting': {
+            'beta': 0.5,
+            'lambda_boost': 0.2,
+            'norm': 'zscore'
+        }
+    }
+    
+    theta_avg, alpha, q = aggregate_theta_weighted(
+        theta_list, domains, n_map, score_map, agg_domain, config
+    )
+    
+    # Check outputs
+    assert 'conv.weight' in theta_avg
+    assert len(alpha) == 3
+    assert len(q) == 3
+    assert np.allclose(np.sum(alpha), 1.0), "Alpha should sum to 1"
+    assert np.all(alpha >= 0), "Alpha should be non-negative"
+    assert np.all(q >= 0), "Fairness factors should be non-negative"
+    assert np.allclose(np.sum(q), 1.0), "Fairness factors should sum to 1"
+
+
+def test_aggregate_theta_weighted_lambda_boost():
+    """Test that lambda boost increases selected aggregator's weight."""
+    # Create identical theta states
+    theta = {'param': torch.tensor([1.0])}
+    theta_list = [theta.copy(), theta.copy(), theta.copy()]
+    
+    domains = ['d1', 'd2', 'd3']
+    n_map = {'d1': 100, 'd2': 100, 'd3': 100}  # Equal samples
+    score_map = {'d1': 1.0, 'd2': 1.0, 'd3': 1.0}  # Equal scores
+    
+    # Test with d2 selected
+    config = {
+        'fair_weighting': {
+            'beta': 0.5,
+            'lambda_boost': 0.5,
+            'norm': 'zscore'
+        }
+    }
+    
+    _, alpha, q = aggregate_theta_weighted(
+        theta_list, domains, n_map, score_map, 'd2', config
+    )
+    
+    # Lambda boost adds to d2's normalized score -> higher fairness factor -> higher weight
+    d2_idx = domains.index('d2')
+    assert alpha[d2_idx] > alpha[0] and alpha[d2_idx] > alpha[2], \
+        "Selected aggregator should have higher weight due to lambda boost"
+
+
+def test_aggregate_theta_weighted_fairness_effect():
+    """Test that fairness factors favor struggling domains (high scores)."""
+    theta = {'param': torch.tensor([1.0])}
+    theta_list = [theta.copy(), theta.copy(), theta.copy()]
+    
+    domains = ['d1', 'd2', 'd3']
+    n_map = {'d1': 100, 'd2': 100, 'd3': 100}  # Equal samples
+    # d3 has highest score (worst performance), should get higher fairness factor
+    score_map = {'d1': 0.3, 'd2': 0.5, 'd3': 0.9}
+    
+    config = {
+        'fair_weighting': {
+            'beta': 1.0,  # Higher beta = more emphasis on fairness
+            'lambda_boost': 0.0,  # No boost to isolate fairness effect
+            'norm': 'zscore'
+        }
+    }
+    
+    _, alpha, q = aggregate_theta_weighted(
+        theta_list, domains, n_map, score_map, 'd1', config
+    )
+    
+    # Domain with higher score (d3=0.9) should get higher fairness factor
+    # After zscore normalization and softmax with positive beta
+    assert q[2] > q[0] and q[2] > q[1], \
+        "Worst-performing domain (highest score) should have highest fairness factor"
+
+
+def test_aggregate_theta_weighted_beta_effect():
+    """Test that beta controls temperature of fairness softmax."""
+    theta = {'param': torch.tensor([1.0])}
+    theta_list = [theta.copy(), theta.copy()]
+    
+    domains = ['d1', 'd2']
+    n_map = {'d1': 100, 'd2': 100}
+    score_map = {'d1': 0.2, 'd2': 0.8}  # Large difference
+    
+    # Low beta (more uniform)
+    config_low = {
+        'fair_weighting': {
+            'beta': 0.1,
+            'lambda_boost': 0.0,
+            'norm': 'zscore'
+        }
+    }
+    
+    _, _, q_low = aggregate_theta_weighted(
+        theta_list, domains, n_map, score_map, 'd1', config_low
+    )
+    
+    # High beta (sharper differences)
+    config_high = {
+        'fair_weighting': {
+            'beta': 2.0,
+            'lambda_boost': 0.0,
+            'norm': 'zscore'
+        }
+    }
+    
+    _, _, q_high = aggregate_theta_weighted(
+        theta_list, domains, n_map, score_map, 'd1', config_high
+    )
+    
+    # Higher beta should create larger difference between q values
+    diff_low = abs(q_low[1] - q_low[0])
+    diff_high = abs(q_high[1] - q_high[0])
+    assert diff_high > diff_low, "Higher beta should create sharper differences"
+
+
+def test_aggregate_theta_weighted_input_validation():
+    """Test input validation for fair-weighted aggregation."""
+    theta = {'param': torch.tensor([1.0])}
+    theta_list = [theta.copy()]
+    domains = ['d1']
+    
+    config = {
+        'fair_weighting': {
+            'beta': 0.5,
+            'lambda_boost': 0.2,
+            'norm': 'zscore'
+        }
+    }
+    
+    # Missing domain in n_map
+    with pytest.raises(ValueError, match="missing from n_map"):
+        aggregate_theta_weighted(
+            theta_list, domains, {}, {'d1': 1.0}, 'd1', config
+        )
+    
+    # Missing domain in score_map
+    with pytest.raises(ValueError, match="missing from score_map"):
+        aggregate_theta_weighted(
+            theta_list, domains, {'d1': 100}, {}, 'd1', config
+        )
+    
+    # Negative sample count
+    with pytest.raises(ValueError, match="must be non-negative"):
+        aggregate_theta_weighted(
+            theta_list, domains, {'d1': -10}, {'d1': 1.0}, 'd1', config
+        )
+    
+    # Non-finite scores
+    with pytest.raises(ValueError, match="must be finite"):
+        aggregate_theta_weighted(
+            theta_list, domains, {'d1': 100}, {'d1': float('inf')}, 'd1', config
+        )
+
+
+def test_aggregate_theta_weighted_weight_combination():
+    """Test that final weights combine sample counts and fairness factors correctly."""
+    theta = {'param': torch.tensor([1.0])}
+    theta_list = [theta.copy(), theta.copy()]
+    
+    domains = ['d1', 'd2']
+    # d1 has more samples but worse performance (higher score)
+    n_map = {'d1': 300, 'd2': 100}
+    score_map = {'d1': 0.8, 'd2': 0.2}  # d1 worse
+    
+    config = {
+        'fair_weighting': {
+            'beta': 1.0,
+            'lambda_boost': 0.0,
+            'norm': 'zscore'
+        }
+    }
+    
+    _, alpha, q = aggregate_theta_weighted(
+        theta_list, domains, n_map, score_map, 'd1', config
+    )
+    
+    # Verify alpha is normalized product of n and q
+    n = np.array([n_map[d] for d in domains])
+    expected_unnorm = n * q
+    expected_alpha = expected_unnorm / np.sum(expected_unnorm)
+    
+    assert np.allclose(alpha, expected_alpha, atol=1e-6), \
+        "Alpha should be normalized product of sample counts and fairness factors"

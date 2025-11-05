@@ -206,8 +206,8 @@ def aggregate_theta_weighted(
         S_norm[agg_idx] += lambda_boost
 
     # 3. Compute fairness factors via softmax
-    # Higher scores get lower weights (invert by negation)
-    exp_vals = np.exp(-beta * S_norm)
+    # Higher scores (worse performance) get higher fairness factors
+    exp_vals = np.exp(beta * S_norm)
     q = exp_vals / np.sum(exp_vals)  # Fairness factors
 
     # 4. Compute final weights: alpha = normalize(n ⊙ q)
