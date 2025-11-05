@@ -164,9 +164,19 @@ def test_resnet50_config_file():
     assert config['model']['backbone'] == 'resnet50', \
         "ResNet50 config should have backbone='resnet50'"
     assert config['model']['lora']['alpha'] == 32, \
-        "ResNet50 config should have lora.alpha=32"
-    assert config['training']['batch_size'] == 48, \
-        "ResNet50 config should have batch_size=48 for memory management"
+        "ResNet50 config should have lora.alpha=32 for increased model capacity"
+    assert config['training']['batch_size'] == 128, \
+        "ResNet50 config should have batch_size=128"
+    
+    # Check that new features are present with default (disabled) values
+    assert 'fair_weighting' in config, \
+        "ResNet50 config should have fair_weighting section"
+    assert config['fair_weighting']['enable'] == False, \
+        "fair_weighting should be disabled by default"
+    assert 'calibration' in config, \
+        "ResNet50 config should have calibration section"
+    assert config['calibration']['enable'] == False, \
+        "calibration should be disabled by default"
 
     print(f"✓ ResNet50 config file has correct values")
 

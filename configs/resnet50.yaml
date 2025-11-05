@@ -54,6 +54,23 @@ edge_manager:
   ema_beta: 0.9  # Beta for exponential moving average of loss
   proj_dim: 64   # Dimension for random projection (prototypes)
 
+# Fair-Weighted Aggregation
+fair_weighting:
+  enable: false  # Enable fair-weighted aggregation (FW-FedAvg)
+  beta: 0.5  # Softmax temperature for fairness factors (higher = more uniform)
+  lambda_boost: 0.2  # Bonus added to selected aggregator's score
+  norm: "zscore"  # Score normalization mode: "zscore" or "minmax"
+
+# Aggregator Calibration Step (ACS)
+calibration:
+  enable: false  # Enable post-aggregation calibration on DC offload pool
+  steps: 200  # Number of calibration steps
+  batch_size: 64  # Batch size for calibration
+  mu: 0.01  # Proximal regularization coefficient (controls deviation from theta_avg)
+  lr: null  # Learning rate for calibration (uses lr_theta if null)
+  freeze_phi: true  # Freeze domain-specific parameters during calibration
+  min_samples: 100  # Minimum samples required in DC pool to run calibration
+
 # Logging and checkpointing
 logging:
   log_interval: 1  # Log metrics every N rounds
