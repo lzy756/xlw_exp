@@ -4,15 +4,285 @@ import os
 import random
 from typing import Dict, List, Optional
 import torch
+import torch.nn as nn
+import torch.optim as optim
+from torch.utils.data import DataLoader, Dataset
 import yaml
 from data.domainnet import DomainNetDataset
 from data.partition import build_domain_clients
 from core.trainer import LocalTrainer, dc_train_on_offload_pool
-from core.aggregator import aggregate_theta, aggregate_phi_domain
+from core.aggregator import aggregate_theta, aggregate_phi_domain, aggregate_theta_weighted
 from core.edge_manager import EdgeManager
 from core.selector import FAPFloatSoftmax
 from utils.metrics import per_domain_metrics
 from utils.common import set_seed, build_logger, get_git_commit_hash
+from utils.transforms import build_transforms
+
+
+class ExperimentEnv:
+    """Lightweight facade for data access and sample counting.
+    
+    Provides convenience methods for calibration and fair-weighted aggregation
+    without modifying existing EdgeManager or data structures.
+    """
+
+    def __init__(self, train_data: Dict, config: Dict, domains: List[str]):
+        """Initialize experiment environment.
+        
+        Args:
+            train_data: Dictionary of training data per domain
+            config: Configuration dictionary
+            domains: List of domain names
+        """
+        self.train_data = train_data
+        self.config = config
+        self.domains = domains
+
+    def dc_unload_dataset(self, domain: str) -> Optional[DomainNetDataset]:
+        """Get DC offload pool dataset for a domain.
+        
+        Args:
+            domain: Domain name
+            
+        Returns:
+            DomainNetDataset for DC offload pool, or None if not available
+        """
+        if domain not in self.train_data:
+            return None
+        
+        dc_pool = self.train_data[domain].get('dc_unload_pool', [])
+        if not dc_pool:
+            return None
+        
+        dataset = DomainNetDataset(
+            root=self.config['data']['root'],
+            indices=dc_pool,
+            train=True
+        )
+        
+        return dataset if len(dataset) > 0 else None
+
+    def count_domain_samples_this_round(
+        self, 
+        domain: str, 
+        participating: Dict[str, List[int]]
+    ) -> int:
+        """Count total samples (UE + DC) used in training this round.
+        
+        Args:
+            domain: Domain name
+            participating: Dict mapping domain -> list of participating client IDs
+            
+        Returns:
+            Total sample count for the domain
+        """
+        if domain not in self.train_data:
+            return 0
+        
+        # Count UE samples from participating clients
+        ue_samples = 0
+        if domain in participating:
+            for client_id in participating[domain]:
+                if client_id < len(self.train_data[domain]['clients']):
+                    client_data = self.train_data[domain]['clients'][client_id]
+                    ue_samples += len(client_data.get('local', []))
+        
+        # Count DC pool samples if offload enabled
+        dc_samples = 0
+        if self.config.get('data', {}).get('offload_pool_enabled', False):
+            dc_pool = self.train_data[domain].get('dc_unload_pool', [])
+            dc_samples = len(dc_pool)
+        
+        return ue_samples + dc_samples
+
+    def build_loader(
+        self, 
+        dataset: Dataset, 
+        batch_size: int, 
+        train: bool = True
+    ) -> DataLoader:
+        """Build DataLoader with appropriate settings.
+        
+        Args:
+            dataset: Dataset to load
+            batch_size: Batch size
+            train: Whether this is for training (affects shuffling)
+            
+        Returns:
+            DataLoader instance
+        """
+        num_workers = self.config.get('system', {}).get('num_workers', 4)
+        
+        return DataLoader(
+            dataset,
+            batch_size=batch_size,
+            shuffle=train,
+            num_workers=num_workers,
+            pin_memory=True
+        )
+
+
+def _vectorize_theta(model_state: Dict[str, torch.Tensor]) -> torch.Tensor:
+    """Vectorize theta parameters (exclude heads and lora_blocks).
+    
+    Args:
+        model_state: Model state dictionary
+        
+    Returns:
+        Flattened parameter vector
+    """
+    theta_params = []
+    for key, param in sorted(model_state.items()):
+        if 'heads.' not in key and 'lora_blocks.' not in key:
+            theta_params.append(param.flatten())
+    
+    return torch.cat(theta_params) if theta_params else torch.tensor([])
+
+
+def calibrate_on_dc(
+    agg_domain: str,
+    theta_avg: Dict[str, torch.Tensor],
+    cfg: Dict,
+    model: nn.Module,
+    env: ExperimentEnv,
+    logger
+) -> Dict[str, torch.Tensor]:
+    """Calibrate global backbone on aggregator's DC offload pool.
+    
+    Post-aggregation fine-tuning with proximal regularization to adapt
+    theta to the selected aggregator domain while preventing catastrophic
+    forgetting of global knowledge.
+    
+    Args:
+        agg_domain: Selected aggregator domain
+        theta_avg: Aggregated global backbone parameters (pre-calibration)
+        cfg: Configuration dictionary
+        model: Neural network model
+        env: ExperimentEnv for data access
+        logger: Logger instance
+        
+    Returns:
+        Calibrated theta parameters
+    """
+    # Extract calibration configuration
+    cal_cfg = cfg.get('calibration', {})
+    steps = cal_cfg.get('steps', 200)
+    batch_size = cal_cfg.get('batch_size', 64)
+    mu = cal_cfg.get('mu', 0.01)
+    lr = cal_cfg.get('lr')
+    if lr is None:
+        lr = cfg['training'].get('lr_theta', 0.0003)
+    freeze_phi = cal_cfg.get('freeze_phi', True)
+    min_samples = cal_cfg.get('min_samples', 100)
+    device = cfg['system']['device']
+    
+    # Early exit: check if offload pool enabled
+    if not cfg.get('data', {}).get('offload_pool_enabled', False):
+        logger.info("Calibration skipped: offload pool disabled")
+        return theta_avg
+    
+    # Get DC dataset for aggregator domain
+    dc_dataset = env.dc_unload_dataset(agg_domain)
+    
+    # Early exit: check minimum sample threshold
+    if dc_dataset is None or len(dc_dataset) < min_samples:
+        logger.info(
+            f"Calibration skipped: insufficient samples in {agg_domain} DC pool "
+            f"(have {len(dc_dataset) if dc_dataset else 0}, need {min_samples})"
+        )
+        return theta_avg
+    
+    logger.info(
+        f"Starting calibration on {agg_domain} DC pool "
+        f"({len(dc_dataset)} samples, {steps} steps)"
+    )
+    
+    # Load theta_avg into model
+    model.load_state_dict(theta_avg, strict=False)
+    model = model.to(device)
+    model.train()
+    
+    # Freeze phi parameters (heads and lora_blocks)
+    if freeze_phi:
+        for name, param in model.named_parameters():
+            if 'heads.' in name or 'lora_blocks.' in name:
+                param.requires_grad = False
+            else:
+                param.requires_grad = True
+    
+    # Collect theta parameters for optimizer
+    theta_params = [
+        param for name, param in model.named_parameters()
+        if param.requires_grad and 'heads.' not in name and 'lora_blocks.' not in name
+    ]
+    
+    # Create optimizer for theta only
+    optimizer = optim.AdamW(theta_params, lr=lr, weight_decay=cfg['training'].get('weight_decay', 0.0001))
+    
+    # Vectorize initial theta for proximal term
+    theta_init_vec = _vectorize_theta(theta_avg).to(device)
+    
+    # Create DataLoader
+    dataloader = env.build_loader(dc_dataset, batch_size, train=True)
+    data_iter = iter(dataloader)
+    
+    # Calibration loop
+    for step in range(steps):
+        # Get batch (restart iterator if exhausted)
+        try:
+            batch = next(data_iter)
+        except StopIteration:
+            data_iter = iter(dataloader)
+            batch = next(data_iter)
+        
+        images, labels = batch
+        images = images.to(device)
+        labels = labels.to(device)
+        
+        # Validate labels
+        num_classes = cfg['data']['num_classes']
+        assert labels.min() >= 0 and labels.max() < num_classes, \
+            f"Invalid labels: range [{labels.min()}, {labels.max()}], expected [0, {num_classes})"
+        
+        # Forward pass using aggregator domain head
+        logits = model(images, agg_domain)
+        
+        # Compute CE loss
+        ce_loss = nn.functional.cross_entropy(logits, labels)
+        
+        # Compute proximal loss: μ/2 * ||θ_cur - θ_avg||²
+        current_state = {
+            k: v for k, v in model.state_dict().items()
+            if 'heads.' not in k and 'lora_blocks.' not in k
+        }
+        theta_cur_vec = _vectorize_theta(current_state).to(device)
+        proximal_loss = (mu / 2.0) * torch.sum((theta_cur_vec - theta_init_vec) ** 2)
+        
+        # Total loss
+        total_loss = ce_loss + proximal_loss
+        
+        # Backward and optimize
+        optimizer.zero_grad()
+        total_loss.backward()
+        torch.nn.utils.clip_grad_norm_(theta_params, max_norm=5.0)
+        optimizer.step()
+        
+        if (step + 1) % 50 == 0:
+            logger.info(
+                f"  Calibration step {step+1}/{steps}: "
+                f"ce_loss={ce_loss.item():.4f}, prox_loss={proximal_loss.item():.6f}"
+            )
+    
+    # Extract calibrated theta
+    calibrated_theta = {
+        k: v.cpu().clone()
+        for k, v in model.state_dict().items()
+        if 'heads.' not in k and 'lora_blocks.' not in k
+    }
+    
+    logger.info(f"Calibration completed for {agg_domain}")
+    
+    return calibrated_theta
 
 
 def run_training(
@@ -53,6 +323,9 @@ def run_training(
     # Use the provided experiment directory
     output_dir = exp_dir
 
+    # Initialize ExperimentEnv for data access and sample counting
+    env = ExperimentEnv(train_data, config, config['data']['domains'])
+
     # Initialize global theta (backbone parameters)
     theta_global = {
         k: v.cpu().clone()
@@ -66,7 +339,9 @@ def run_training(
         'worst_acc': [],
         'variance': [],
         'per_domain_acc': {d: [] for d in config['data']['domains']},
-        'selected_aggregators': []
+        'selected_aggregators': [],
+        'alpha_weights': [],  # Fair-weighted aggregation weights
+        'fairness_factors': []  # Fairness factors (q)
     }
 
     logger.info(f"Starting federated learning training for {total_rounds} rounds")
@@ -98,6 +373,8 @@ def run_training(
         # Phase 2: Local Training
         all_theta_updates = []
         all_theta_weights = []
+        domain_theta_updates = {d: [] for d in config['data']['domains']}
+        domain_theta_weights = {d: [] for d in config['data']['domains']}
         domain_phi_updates = {d: [] for d in config['data']['domains']}
         domain_phi_weights = {d: [] for d in config['data']['domains']}
 
@@ -131,9 +408,11 @@ def run_training(
                     local_steps=local_steps
                 )
 
-                # Collect updates
+                # Collect updates (both flat and per-domain)
                 all_theta_updates.append(theta_state)
                 all_theta_weights.append(len(client_dataset))
+                domain_theta_updates[domain].append(theta_state)
+                domain_theta_weights[domain].append(len(client_dataset))
                 domain_phi_updates[domain].append(phi_state)
                 domain_phi_weights[domain].append(len(client_dataset))
 
@@ -209,11 +488,89 @@ def run_training(
             logger.info(f"Selection probabilities: {dict(zip(config['data']['domains'], probabilities))}")
             logger.info(f"Raw scores: {dict(zip(config['data']['domains'], scores))}")
 
-            # Global theta aggregation
-            theta_global = aggregate_theta(
-                client_theta_list=all_theta_updates,
-                client_weights=all_theta_weights
-            )
+            # Build score_map and n_map for aggregation
+            score_map = {d: s for d, s in zip(config['data']['domains'], scores)}
+            n_map = {
+                d: env.count_domain_samples_this_round(d, participating_clients)
+                for d in config['data']['domains']
+            }
+
+            # Global theta aggregation (fair-weighted or standard)
+            fair_weighting_enabled = config.get('fair_weighting', {}).get('enable', False)
+            
+            if fair_weighting_enabled:
+                logger.info("Using fair-weighted aggregation")
+                
+                # First, aggregate theta within each domain
+                domain_theta_aggregated = []
+                active_domains = []
+                
+                for domain in config['data']['domains']:
+                    if domain_theta_updates[domain]:
+                        # Aggregate theta for this domain
+                        domain_theta = aggregate_theta(
+                            client_theta_list=domain_theta_updates[domain],
+                            client_weights=domain_theta_weights[domain]
+                        )
+                        domain_theta_aggregated.append(domain_theta)
+                        active_domains.append(domain)
+                
+                # Then apply fair-weighted aggregation across domains
+                if domain_theta_aggregated:
+                    # Filter maps to only include active domains
+                    active_n_map = {d: n_map[d] for d in active_domains}
+                    active_score_map = {d: score_map[d] for d in active_domains}
+                    
+                    theta_global, alpha, q = aggregate_theta_weighted(
+                        theta_e_list=domain_theta_aggregated,
+                        domains=active_domains,
+                        n_map=active_n_map,
+                        score_map=active_score_map,
+                        agg_domain=selected_domain,
+                        cfg=config
+                    )
+                    
+                    logger.info(f"Aggregation weights (α): {dict(zip(active_domains, alpha))}")
+                    logger.info(f"Fairness factors (q): {dict(zip(active_domains, q))}")
+                    
+                    # Pad with None for inactive domains if needed
+                    full_alpha = [None] * len(config['data']['domains'])
+                    full_q = [None] * len(config['data']['domains'])
+                    for i, domain in enumerate(config['data']['domains']):
+                        if domain in active_domains:
+                            idx = active_domains.index(domain)
+                            full_alpha[i] = alpha[idx]
+                            full_q[i] = q[idx]
+                    
+                    metrics_history['alpha_weights'].append(full_alpha)
+                    metrics_history['fairness_factors'].append(full_q)
+                else:
+                    # No updates to aggregate
+                    metrics_history['alpha_weights'].append(None)
+                    metrics_history['fairness_factors'].append(None)
+            else:
+                # Standard FedAvg aggregation
+                theta_global = aggregate_theta(
+                    client_theta_list=all_theta_updates,
+                    client_weights=all_theta_weights
+                )
+                
+                metrics_history['alpha_weights'].append(None)
+                metrics_history['fairness_factors'].append(None)
+
+            # Calibration step (if enabled)
+            calibration_enabled = config.get('calibration', {}).get('enable', False)
+            
+            if calibration_enabled:
+                logger.info(f"Running calibration on {selected_domain} DC pool")
+                theta_global = calibrate_on_dc(
+                    agg_domain=selected_domain,
+                    theta_avg=theta_global,
+                    cfg=config,
+                    model=model,
+                    env=env,
+                    logger=logger
+                )
 
             # Update edge manager
             edge_manager.end_round_with_aggregator(selected_domain)

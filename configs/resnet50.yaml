@@ -30,11 +30,11 @@ model:
 training:
   total_rounds: 200
   local_steps: 5  # Local training steps per client
-  batch_size: 48  # Reduced from 64 to accommodate ~30% higher memory usage
+  batch_size: 128  # Reduced from 64 to accommodate ~30% higher memory usage
   clients_participation: 0.2  # Fraction of clients participating per round
 
   # Learning rates
-  lr_theta: 0.0003  # Learning rate for global backbone (3e-4)
+  lr_theta: 0.0001  # Learning rate for global backbone (2e-4)
   lr_phi: 0.001    # Learning rate for domain-specific parameters (1e-3)
   weight_decay: 0.0001  # Weight decay (1e-4)
   cosine_lr: true  # Use cosine learning rate schedule
@@ -43,10 +43,10 @@ training:
 selector:
   K: 5  # Aggregation period (select every K rounds)
   w1: 1.0  # Weight for loss L_e
-  w2: 0.5  # Weight for drift Δ_e
+  w2: 1.0  # Weight for drift Δ_e
   w3: 0.3  # Weight for coverage H_e
   w4: 0.2  # Weight for stability S_e^stay
-  tau: 1.0  # Softmax temperature
+  tau: 0.7  # Softmax temperature
   stability_bonus: 0.2  # Bonus for selecting same aggregator
 
 # Edge Manager
