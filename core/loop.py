@@ -240,7 +240,8 @@ def calibrate_on_dc(
             data_iter = iter(dataloader)
             batch = next(data_iter)
         
-        images, labels = batch
+        # DomainNetDataset returns (image, label, domain)
+        images, labels, _ = batch
         images = images.to(device)
         labels = labels.to(device)
         
@@ -272,7 +273,7 @@ def calibrate_on_dc(
         torch.nn.utils.clip_grad_norm_(theta_params, max_norm=5.0)
         optimizer.step()
         
-        if (step + 1) % 50 == 0:
+        if (step + 1) % 10 == 0:
             logger.info(
                 f"  Calibration step {step+1}/{steps}: "
                 f"ce_loss={ce_loss.item():.4f}, prox_loss={proximal_loss.item():.6f}"

@@ -18,23 +18,40 @@ def create_mock_dataset(length=100):
 class DummyModel(nn.Module):
     """Dummy model for testing."""
     
-    def __init__(self):
+    def __init__(self, num_classes=10):
         super().__init__()
-        self.conv1 = nn.Conv2d(3, 64, 7)  # Theta parameter
+        self.conv1 = nn.Conv2d(3, 64, 7, padding=3)  # Theta parameter
         self.bn1 = nn.BatchNorm2d(64)  # Theta parameter
+        self.pool = nn.AdaptiveAvgPool2d((1, 1))
+        self.fc = nn.Linear(64, 512)  # Theta parameter
         
         # Phi parameters (should be frozen during calibration)
         self.heads = nn.ModuleDict({
-            'domain1': nn.Linear(512, 10),
-            'domain2': nn.Linear(512, 10),
+            'domain1': nn.Linear(512, num_classes),
+            'domain2': nn.Linear(512, num_classes),
+            'infograph': nn.Linear(512, num_classes),  # Add infograph domain
         })
         self.lora_blocks = nn.ModuleDict({
             '0': nn.Linear(512, 16),
         })
     
     def forward(self, x, domain):
-        # Simplified forward pass
-        return torch.randn(x.size(0), 10)
+        # Proper forward pass that uses model parameters
+        x = self.conv1(x)
+        x = self.bn1(x)
+        x = torch.relu(x)
+        x = self.pool(x)
+        x = torch.flatten(x, 1)
+        x = self.fc(x)
+        
+        # Use the domain-specific head
+        if domain in self.heads:
+            x = self.heads[domain](x)
+        else:
+            # Default to first head if domain not found
+            x = list(self.heads.values())[0](x)
+        
+        return x
 
 
 # ============================================================================
@@ -349,3 +366,102 @@ def test_calibrate_on_dc_returns_theta_only():
     # Verify theta parameters ARE included
     assert 'conv1.weight' in calibrated_theta
     assert 'bn1.weight' in calibrated_theta
+
+
+def test_calibrate_on_dc_handles_domainnet_batch_format():
+    """Test that calibration correctly handles DomainNetDataset 3-tuple batch format.
+    
+    This test specifically verifies the fix for the issue where DomainNetDataset
+    returns (image, label, domain) tuples, but the calibration code was expecting
+    only (images, labels).
+    
+    Regression test for: ValueError: too many values to unpack (expected 2)
+    """
+    import tempfile
+    import os
+    from torch.utils.data import DataLoader
+    
+    # Create a temporary directory for the dataset
+    with tempfile.TemporaryDirectory() as tmpdir:
+        config = {
+            'data': {
+                'offload_pool_enabled': True,
+                'root': tmpdir,
+                'num_classes': 126
+            },
+            'calibration': {
+                'enable': True,
+                'min_samples': 10,  # Low threshold for testing
+                'steps': 2,  # Just 2 steps for quick test
+                'batch_size': 4,
+                'mu': 0.01,
+                'lr': 1e-3,
+                'freeze_phi': True
+            },
+            'system': {
+                'device': 'cpu',
+                'num_workers': 0
+            }
+        }
+        
+        # Create a small mock DomainNetDataset with 20 samples
+        # The dataset will automatically create dummy data
+        mock_indices = list(range(20))
+        
+        # Create ExperimentEnv with mock data
+        train_data = {
+            'infograph': {
+                'dc_unload_pool': mock_indices
+            }
+        }
+        env = ExperimentEnv(train_data, config, ['infograph'])
+        
+        # Get dataset
+        dataset = env.dc_unload_dataset('infograph')
+        assert dataset is not None, "Dataset should be created"
+        assert len(dataset) == 20, "Dataset should have 20 samples"
+        
+        # Create a DataLoader to verify batch format
+        loader = DataLoader(dataset, batch_size=4, shuffle=False)
+        
+        # Get one batch and verify it has 3 elements
+        batch = next(iter(loader))
+        assert len(batch) == 3, "Batch should have 3 elements (images, labels, domains)"
+        
+        images, labels, domains = batch
+        assert images.shape[0] == 4, "Batch should have 4 images"
+        assert labels.shape[0] == 4, "Batch should have 4 labels"
+        assert len(domains) == 4, "Batch should have 4 domain strings"
+        
+        # Now verify calibrate_on_dc can handle this format
+        model = DummyModel()
+        logger = Mock()
+        
+        # Create a simple theta_avg
+        theta_avg = {
+            'conv1.weight': torch.randn(64, 3, 7, 7),
+            'bn1.weight': torch.randn(64),
+        }
+        
+        # Run calibration (should not crash with unpacking error)
+        try:
+            result = calibrate_on_dc('infograph', theta_avg, config, model, env, logger)
+            
+            # Verify result is a dict with theta parameters
+            assert isinstance(result, dict), "Result should be a dict"
+            assert 'conv1.weight' in result or len(result) > 0, "Result should have parameters"
+            
+            # Verify no phi parameters in result
+            for key in result.keys():
+                assert 'heads.' not in key, "Result should not contain head parameters"
+                assert 'lora_blocks.' not in key, "Result should not contain lora parameters"
+                
+            success = True
+        except ValueError as e:
+            if "too many values to unpack" in str(e):
+                success = False
+                pytest.fail(f"Calibration failed to unpack batch correctly: {e}")
+            else:
+                raise
+        
+        assert success, "Calibration should handle 3-tuple batch format correctly"

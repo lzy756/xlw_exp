@@ -44,6 +44,10 @@ def parse_experiment_log(log_file):
             if round_match:
                 current_round = int(round_match.group(1))
 
+            # Only count 100 rounds
+            if current_round and current_round > 100:
+                break
+            
             # Extract metrics
             if 'Average accuracy:' in line:
                 acc_match = re.search(r'Average accuracy: ([\d.]+)%', line)

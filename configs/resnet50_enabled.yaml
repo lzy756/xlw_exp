@@ -56,15 +56,15 @@ edge_manager:
 
 # Fair-Weighted Aggregation
 fair_weighting:
-  enable: false  # Enable fair-weighted aggregation (FW-FedAvg)
-  beta: 0.5  # Softmax temperature for fairness factors (higher = more uniform)
-  lambda_boost: 0.2  # Bonus added to selected aggregator's score
+  enable: true  # Enable fair-weighted aggregation (FW-FedAvg)
+  beta: 0.35  # Softmax temperature for fairness factors (higher = more uniform)
+  lambda_boost: 0.15  # Bonus added to selected aggregator's score
   norm: "zscore"  # Score normalization mode: "zscore" or "minmax"
 
 # Aggregator Calibration Step (ACS)
 calibration:
-  enable: false  # Enable post-aggregation calibration on DC offload pool
-  steps: 200  # Number of calibration steps
+  enable: true  # Enable post-aggregation calibration on DC offload pool
+  steps: 110  # Number of calibration steps
   batch_size: 64  # Batch size for calibration
   mu: 0.01  # Proximal regularization coefficient (controls deviation from theta_avg)
   lr: null  # Learning rate for calibration (uses lr_theta if null)
