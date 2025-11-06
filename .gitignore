@@ -116,7 +116,7 @@ index.json
 # markdown files (except README.md,quickstart.md)
 *.md
 !README.md
-!./quickstart.md
+!/quickstart.md
 
 # support shell files (except those in ./scripts/)
 *.sh

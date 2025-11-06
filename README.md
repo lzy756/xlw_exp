@@ -152,7 +152,7 @@ python scripts/visualize_drift.py \
 
 ### Getting Help
 
-For detailed setup and usage, see [quickstart.md](specs/001-fl-domainnet-fap-lora/quickstart.md)
+For detailed setup and usage, see [quickstart.md](quickstart.md)
 
 ## Citation
 
