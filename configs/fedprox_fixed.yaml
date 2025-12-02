@@ -1,0 +1,61 @@
+# FedProx-Fixed Baseline Configuration
+# FedProx with fixed aggregation point for comparison
+
+# Algorithm
+algo: "fedprox"
+
+# FedProx-specific configuration
+prox:
+  mu: 0.01  # Proximal term coefficient
+
+# Fixed Aggregator Selector
+selector:
+  type: "fixed"
+  fixed_domain: "real"  # Always aggregate at "real" domain
+
+# Dataset (same as main experiment)
+data:
+  root: "/root/domainnet"
+  domains: ["clipart", "infograph", "painting", "quickdraw", "real", "sketch"]
+  num_classes: 126
+  offload_pool_enabled: true  # DC clients use offload pool
+
+# Client partitioning (same as main experiment)
+partition:
+  num_clients_per_domain: 24
+  alpha: 0.1  # Strong heterogeneity
+  unload_ratio: 0.2  # ρ = 20%
+  val_ratio: 0.1
+  seed: 42
+  offload_pool_enabled: true
+
+# Model architecture (single-head, no LoRA)
+model:
+  backbone: "resnet18_single"  # Use ResNet18Single
+  pretrained: true
+
+# Training (same hyperparameters as main experiment)
+training:
+  total_rounds: 200
+  local_steps: 5
+  batch_size: 32
+  clients_participation: 0.2  # 20% participation rate
+  lr: 0.0003  # Single learning rate (3e-4)
+  weight_decay: 0.0001
+
+# Logging and checkpointing
+logging:
+  log_interval: 1
+  checkpoint_interval: 20
+  output_dir: "./outputs"
+  exp_name: "fedprox-fixed"
+  use_timestamp_dir: true
+  save_config: true
+  save_experiment_info: true
+  timestamp_format: "%Y-%m-%d-%H-%M"
+
+# System
+system:
+  device: "cuda"
+  seed: 42
+  num_workers: 4
