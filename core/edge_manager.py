@@ -49,6 +49,7 @@ class EdgeManager:
         self.last_aggregator: Optional[str] = None
 
         # Prototype tracking
+        self.drift_cache: Dict[str, float] = {d: 0.0 for d in domains}
         # Fixed random projection matrix (deterministic with seed=0)
         # Auto-detect feature dimension from model
         feature_dim = model.feature_dim if hasattr(model, 'feature_dim') else 512
@@ -187,6 +188,7 @@ class EdgeManager:
             # Reset accumulators
             self.proto_sum[domain].zero_()
             self.proto_cnt[domain].zero_()
+            self.drift_cache[domain] = drift
 
             return drift
 
@@ -223,15 +225,12 @@ class EdgeManager:
     def get_drift_scores(self) -> Dict[str, float]:
         """Get cached drift scores for all domains.
         
-        Note: This returns the drift computed in the last call to 
-        get_metrics_for_selection() or compute_drift(). Does not
-        recompute drift to avoid resetting accumulators.
+        Note: This returns the drift computed in the last call to
+        compute_drift() (e.g., after validation). It must NOT recompute
+        drift here because recomputation would reset prototype
+        accumulators before the next aggregation step.
 
         Returns:
             Dictionary mapping domain -> drift score
         """
-        drift_map = {}
-        for domain in self.domains:
-            # Compute drift if not yet computed this round
-            drift_map[domain] = self.compute_drift(domain)
-        return drift_map
+        return {d: self.drift_cache.get(d, 0.0) for d in self.domains}
