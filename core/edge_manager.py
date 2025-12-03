@@ -219,3 +219,19 @@ class EdgeManager:
             'cover_map': cover_map,
             'stay_map': stay_map
         }
+
+    def get_drift_scores(self) -> Dict[str, float]:
+        """Get cached drift scores for all domains.
+        
+        Note: This returns the drift computed in the last call to 
+        get_metrics_for_selection() or compute_drift(). Does not
+        recompute drift to avoid resetting accumulators.
+
+        Returns:
+            Dictionary mapping domain -> drift score
+        """
+        drift_map = {}
+        for domain in self.domains:
+            # Compute drift if not yet computed this round
+            drift_map[domain] = self.compute_drift(domain)
+        return drift_map

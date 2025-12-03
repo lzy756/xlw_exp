@@ -1,6 +1,6 @@
 """Aggregation functions for federated learning."""
 
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Optional
 import torch
 import numpy as np
 
@@ -223,3 +223,127 @@ def aggregate_theta_weighted(
     theta_avg = aggregate_theta(theta_e_list, weights_list)
 
     return theta_avg, alpha, q
+
+
+# =============================================================================
+# v2 Aggregation Functions (simplified, no LoRA)
+# =============================================================================
+
+def aggregate_theta_v2(
+    client_theta_list: List[Dict[str, torch.Tensor]],
+    client_weights: List[float]
+) -> Dict[str, torch.Tensor]:
+    """Aggregate global backbone parameters (θ) for v2 models (no LoRA).
+
+    Args:
+        client_theta_list: List of theta state dicts from clients
+        client_weights: Weights for each client (e.g., based on data size)
+
+    Returns:
+        Aggregated theta state dictionary
+    """
+    # Filter to ensure we only aggregate theta parameters (no heads)
+    filtered_theta_list = []
+    for theta_state in client_theta_list:
+        filtered = {
+            k: v for k, v in theta_state.items()
+            if 'heads.' not in k
+        }
+        filtered_theta_list.append(filtered)
+
+    return fedavg(filtered_theta_list, client_weights)
+
+
+def aggregate_phi_domain_v2(
+    client_phi_list: List[Dict[str, torch.Tensor]],
+    client_weights: List[float],
+    domain: str
+) -> Dict[str, torch.Tensor]:
+    """Aggregate domain-specific head parameters (φ_e) for v2 models.
+
+    In v2, φ only contains domain heads (no LoRA).
+
+    Args:
+        client_phi_list: List of phi state dicts from clients in a domain
+        client_weights: Weights for each client
+        domain: Domain name for filtering
+
+    Returns:
+        Aggregated phi state dictionary for the domain
+    """
+    # Filter to ensure we only aggregate phi parameters for this domain
+    filtered_phi_list = []
+    for phi_state in client_phi_list:
+        filtered = {
+            k: v for k, v in phi_state.items()
+            if f'heads.{domain}' in k
+        }
+        filtered_phi_list.append(filtered)
+
+    return fedavg(filtered_phi_list, client_weights)
+
+
+def fair_weighted_aggregate_v2(
+    domain_theta_updates: Dict[str, List[Dict[str, torch.Tensor]]],
+    domain_theta_weights: Dict[str, List[float]],
+    domains: List[str],
+    fair_factors: Dict[str, float],
+    cfg: Optional[Dict] = None
+) -> Dict[str, torch.Tensor]:
+    """Fair-weighted theta aggregation for v2.
+    
+    Steps:
+    1. Aggregate θ within each domain
+    2. Use fair factors to compute final cross-domain weights
+    3. Final weight = sample_weight × fair_factor
+    4. Cross-domain weighted aggregation
+    
+    Args:
+        domain_theta_updates: Dict mapping domain -> list of theta state dicts
+        domain_theta_weights: Dict mapping domain -> list of sample weights
+        domains: List of domain names
+        fair_factors: Dict mapping domain -> fairness factor (from selector)
+        cfg: Optional configuration dict
+        
+    Returns:
+        Aggregated global theta parameters
+    """
+    # Step 1: Aggregate theta within each domain
+    domain_theta = {}
+    domain_sample_counts = {}
+    
+    for domain in domains:
+        if domain_theta_updates.get(domain):
+            domain_theta[domain] = aggregate_theta_v2(
+                domain_theta_updates[domain],
+                domain_theta_weights[domain]
+            )
+            domain_sample_counts[domain] = sum(domain_theta_weights[domain])
+    
+    if not domain_theta:
+        return {}
+    
+    # Step 2: Compute final weights
+    total_samples = sum(domain_sample_counts.values())
+    final_weights = {}
+    
+    for domain in domain_theta:
+        base_weight = domain_sample_counts[domain] / total_samples
+        fair_factor = fair_factors.get(domain, 1.0 / len(domains))
+        final_weights[domain] = base_weight * fair_factor
+    
+    # Normalize final weights
+    total_weight = sum(final_weights.values())
+    if total_weight > 0:
+        final_weights = {d: w / total_weight for d, w in final_weights.items()}
+    else:
+        # Fallback to uniform weights
+        n = len(final_weights)
+        final_weights = {d: 1.0 / n for d in final_weights}
+    
+    # Step 3: Cross-domain weighted aggregation
+    active_domains = list(domain_theta.keys())
+    theta_list = [domain_theta[d] for d in active_domains]
+    weights = [final_weights[d] for d in active_domains]
+    
+    return fedavg(theta_list, weights)

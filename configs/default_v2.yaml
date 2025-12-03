@@ -1,0 +1,80 @@
+# FL-DomainNet-FAP v2 Configuration
+# Simplified architecture: no LoRA, θ aggregated every round
+
+# Dataset
+data:
+  root: "/root/domainnet"  # Path to DomainNet dataset
+  domains: ["clipart", "infograph", "painting", "quickdraw", "real", "sketch"]
+  num_classes: 126  # Use 126-class subset
+  offload_pool_enabled: false  # Disabled in v2 Phase 1
+
+# Client partitioning
+partition:
+  num_clients_per_domain: 24
+  alpha: 0.1  # Dirichlet concentration parameter
+  unload_ratio: 0.2  # ρ: fraction of data offloaded to DC (20% of training data)
+  val_ratio: 0.1  # Fraction of data for validation
+  seed: 42
+  offload_pool_enabled: false  # Disabled in v2 Phase 1
+
+# Model architecture (v2: no LoRA)
+model:
+  backbone: "resnet50"  # Backbone model: "resnet18" or "resnet50"
+  pretrained: true
+  # LoRA removed in v2
+
+# Training
+training:
+  total_rounds: 100
+  local_steps: 5  # Local training steps per client
+  batch_size: 32
+  clients_participation: 0.2  # Fraction of clients participating per round
+
+  # Learning rates
+  lr_theta: 0.0003  # Learning rate for global backbone (3e-4)
+  lr_phi: 0.001    # Learning rate for domain-specific heads (1e-3)
+  weight_decay: 0.0001  # Weight decay (1e-4)
+  cosine_lr: true  # Use cosine learning rate schedule
+
+# FAP Selector (v2: for fair-weighting, not aggregation point selection)
+selector:
+  K: 5  # Apply fair-weighting every K rounds
+  w1: 1.0  # Weight for loss L_e (high loss → high weight)
+  w2: 0.3  # Weight for drift Δ_e (high drift → low weight)
+  tau: 1.0  # Softmax temperature
+
+# Fair-Weighted Aggregation
+fair_weighting:
+  enable: true  # Enable fair-weighted aggregation every K rounds
+
+# DC Training (disabled in v2 Phase 1)
+dc_training:
+  enable: false
+
+# Calibration (disabled in v2 Phase 1)
+calibration:
+  enable: false
+
+# Edge Manager
+edge_manager:
+  ema_beta: 0.9  # Beta for exponential moving average of loss
+  proj_dim: 64   # Dimension for random projection (prototypes)
+
+# Logging and checkpointing
+logging:
+  log_interval: 1  # Log metrics every N rounds
+  checkpoint_interval: 10  # Save checkpoints every N rounds (more frequent than v1)
+  output_dir: "./outputs"
+  exp_name: ""  # Optional experiment name/tag (appended to timestamp)
+  
+  # Experiment tracking features
+  use_timestamp_dir: true  # Use timestamp-based directory names
+  save_config: true  # Save both original and effective configurations
+  save_experiment_info: true  # Save experiment metadata
+  timestamp_format: "%Y-%m-%d-%H-%M"  # Timestamp format for directory names
+
+# System
+system:
+  device: "cuda"  # Device for training (cuda/cpu)
+  seed: 42       # Random seed for reproducibility
+  num_workers: 4  # DataLoader workers

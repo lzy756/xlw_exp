@@ -1,0 +1,336 @@
+"""Main entry point for FL-DomainNet v2 experiment.
+
+V2 Key Changes:
+- No LoRA, using ResNet50_DomainHeads / ResNet18_DomainHeads
+- θ aggregated every round (not just every K rounds)
+- No calibration or DC training (Phase 1)
+- Optional fair-weighting every K rounds
+"""
+
+import os
+import sys
+import json
+import copy
+import argparse
+from typing import Dict
+import torch
+import yaml
+
+from models.resnet50_domainheads import ResNet50_DomainHeads, ResNet18_DomainHeads
+from data.domainnet import DomainNetDataset
+from data.partition import build_domain_clients
+from core.loop_v2 import LocalTrainerV2, run_training_v2
+from core.edge_manager import EdgeManager
+from core.selector import FAPSelectorV2
+from utils.common import set_seed, build_logger
+from utils.experiment import ExperimentLogger
+
+
+def load_config(config_path: str) -> Dict:
+    """Load configuration from YAML file.
+
+    Args:
+        config_path: Path to config file
+
+    Returns:
+        Configuration dictionary
+    """
+    with open(config_path, 'r') as f:
+        config = yaml.safe_load(f)
+    return config
+
+
+def create_model_v2(config: Dict):
+    """Factory for creating v2 backbone models (no LoRA).
+
+    Args:
+        config: Configuration dictionary
+
+    Returns:
+        Model instance (ResNet18_DomainHeads or ResNet50_DomainHeads)
+
+    Raises:
+        ValueError: If backbone is not supported
+    """
+    backbone = config['model'].get('backbone', 'resnet50')
+    
+    if backbone == 'resnet18':
+        return ResNet18_DomainHeads(
+            num_classes=config['data']['num_classes'],
+            domains=config['data']['domains'],
+            pretrained=config['model']['pretrained']
+        )
+    elif backbone == 'resnet50':
+        return ResNet50_DomainHeads(
+            num_classes=config['data']['num_classes'],
+            domains=config['data']['domains'],
+            pretrained=config['model']['pretrained']
+        )
+    else:
+        raise ValueError(
+            f"Unsupported backbone: {backbone}. Choose 'resnet18' or 'resnet50'."
+        )
+
+
+def prepare_data(config: Dict) -> tuple:
+    """Prepare training and validation data.
+
+    Args:
+        config: Configuration dictionary
+
+    Returns:
+        Tuple of (train_data, val_data)
+    """
+    # Load dataset index
+    index_path = os.path.join(config['data']['root'], 'index.json')
+
+    # Create dummy index if it doesn't exist (for testing)
+    if not os.path.exists(index_path):
+        print(f"Warning: index.json not found at {index_path}")
+        print("Creating dummy index for testing...")
+        dummy_dataset = DomainNetDataset(config['data']['root'])
+
+    with open(index_path, 'r') as f:
+        index = json.load(f)
+
+    # Prepare data for each domain
+    train_data = {}
+    val_data = {}
+
+    for domain_idx, domain in enumerate(config['data']['domains']):
+        # Build client partitions for this domain
+        domain_data = build_domain_clients(
+            index=index,
+            domain=domain,
+            num_clients=config['partition']['num_clients_per_domain'],
+            alpha=config['partition']['alpha'],
+            unload_ratio=config['partition']['unload_ratio'],
+            val_ratio=config['partition']['val_ratio'],
+            seed=config['partition']['seed'] + domain_idx
+        )
+
+        train_data[domain] = domain_data
+
+        # Create validation dataset for the domain
+        # Aggregate all validation indices from clients
+        val_indices = []
+        for client_data in domain_data['clients'].values():
+            val_indices.extend(client_data['val'])
+
+        val_data[domain] = DomainNetDataset(
+            root=config['data']['root'],
+            indices=val_indices,
+            train=False
+        )
+
+    return train_data, val_data
+
+
+def main():
+    """Main experiment runner for v2."""
+    # Parse arguments
+    parser = argparse.ArgumentParser(description='FL-DomainNet v2 Experiment')
+    parser.add_argument(
+        '--config',
+        type=str,
+        default='configs/default_v2.yaml',
+        help='Path to configuration file'
+    )
+    parser.add_argument(
+        '--domains',
+        type=str,
+        nargs='+',
+        help='Override domains to use (e.g., --domains clipart real)'
+    )
+    parser.add_argument(
+        '--rounds',
+        type=int,
+        help='Override number of rounds'
+    )
+    parser.add_argument(
+        '--device',
+        type=str,
+        choices=['cuda', 'cpu'],
+        help='Override device'
+    )
+    parser.add_argument(
+        '--exp-tag',
+        type=str,
+        dest='exp_tag',
+        help='Experiment tag/name to append to timestamp'
+    )
+    parser.add_argument(
+        '--output-dir',
+        type=str,
+        dest='output_dir',
+        help='Override output directory'
+    )
+    parser.add_argument(
+        '--no-timestamp',
+        action='store_true',
+        dest='no_timestamp',
+        help='Disable timestamp-based directory naming'
+    )
+    parser.add_argument(
+        '--no-fair-weighting',
+        action='store_true',
+        dest='no_fair_weighting',
+        help='Disable fair-weighting (use standard FedAvg)'
+    )
+    args = parser.parse_args()
+
+    # Load configuration
+    config = load_config(args.config)
+    
+    # Keep a copy of original config for saving
+    original_config = copy.deepcopy(config)
+
+    # Apply overrides
+    if args.domains:
+        config['data']['domains'] = args.domains
+        print(f"Using domains: {args.domains}")
+    if args.rounds:
+        config['training']['total_rounds'] = args.rounds
+        print(f"Training for {args.rounds} rounds")
+    if args.device:
+        config['system']['device'] = args.device
+    if args.no_fair_weighting:
+        config['fair_weighting']['enable'] = False
+        print("Fair-weighting disabled, using standard FedAvg")
+
+    # Create experiment logger and directory
+    exp_logger = ExperimentLogger(config, args)
+    exp_dir = exp_logger.create_experiment_dir()
+    print(f"Experiment directory: {exp_dir}")
+    
+    # Save configurations
+    exp_logger.save_configs(original_config, config)
+    
+    # Save initial experiment info
+    exp_logger.save_experiment_info(status='running')
+
+    # Set random seed
+    set_seed(config['system']['seed'])
+
+    # Setup logging
+    log_file = os.path.join(exp_dir, 'train.log')
+    logger = build_logger('FL-DomainNet-v2', log_file)
+
+    logger.info("Starting FL-DomainNet v2 experiment")
+    logger.info(f"Experiment directory: {exp_dir}")
+    logger.info(f"Configuration: {args.config}")
+    logger.info(f"Domains: {config['data']['domains']}")
+    logger.info(f"Device: {config['system']['device']}")
+    logger.info(f"Fair-weighting: {'enabled' if config.get('fair_weighting', {}).get('enable', False) else 'disabled'}")
+
+    # Check CUDA availability
+    if config['system']['device'] == 'cuda' and not torch.cuda.is_available():
+        logger.warning("CUDA not available, falling back to CPU")
+        config['system']['device'] = 'cpu'
+
+    try:
+        # Prepare data
+        logger.info("Preparing data...")
+        train_data, val_data = prepare_data(config)
+        logger.info(f"Data preparation complete")
+
+        # Initialize model (v2: no LoRA)
+        logger.info("Initializing v2 model (no LoRA)...")
+        model = create_model_v2(config)
+
+        # Initialize components
+        trainer = LocalTrainerV2(
+            model=model,
+            device=config['system']['device'],
+            lr_theta=config['training']['lr_theta'],
+            lr_phi=config['training']['lr_phi'],
+            weight_decay=config['training']['weight_decay'],
+            cosine_lr=config['training']['cosine_lr']
+        )
+
+        edge_manager = EdgeManager(
+            model=model,
+            domains=config['data']['domains'],
+            num_classes=config['data']['num_classes'],
+            proj_dim=config['edge_manager']['proj_dim'],
+            device=config['system']['device']
+        )
+
+        # v2 selector
+        selector = FAPSelectorV2(
+            domains=config['data']['domains'],
+            w1=config['selector']['w1'],
+            w2=config['selector']['w2'],
+            tau=config['selector']['tau']
+        )
+
+        # Run v2 training
+        logger.info("Starting v2 training...")
+        metrics = run_training_v2(
+            config=config,
+            model=model,
+            train_data=train_data,
+            val_data=val_data,
+            edge_manager=edge_manager,
+            selector=selector,
+            trainer=trainer,
+            logger=logger,
+            exp_dir=exp_dir
+        )
+
+        # Save final metrics
+        metrics_path = os.path.join(exp_dir, 'metrics.json')
+        
+        # Convert fair_factors to serializable format
+        serializable_metrics = {}
+        for key, value in metrics.items():
+            if key == 'fair_factors':
+                # Convert None and dict objects to serializable format
+                serializable_metrics[key] = [
+                    v if v is None else {k: float(vv) for k, vv in v.items()}
+                    for v in value
+                ]
+            else:
+                serializable_metrics[key] = value
+        
+        with open(metrics_path, 'w') as f:
+            json.dump(serializable_metrics, f, indent=2)
+        logger.info(f"Metrics saved to {metrics_path}")
+
+        # Print summary
+        logger.info("="*50)
+        logger.info("Training Summary (v2)")
+        logger.info("="*50)
+        logger.info(f"Final average accuracy: {metrics['avg_acc'][-1]:.2f}%")
+        logger.info(f"Final worst accuracy: {metrics['worst_acc'][-1]:.2f}%")
+        logger.info(f"Final variance: {metrics['variance'][-1]:.4f}")
+
+        # Check success criteria
+        if len(metrics['worst_acc']) > 1:
+            worst_improvement = metrics['worst_acc'][-1] - metrics['worst_acc'][0]
+
+            if metrics['variance'][0] > 0:
+                variance_reduction = (metrics['variance'][0] - metrics['variance'][-1]) / metrics['variance'][0] * 100
+                logger.info(f"Worst-domain improvement: {worst_improvement:.2f} pp")
+                logger.info(f"Variance reduction: {variance_reduction:.2f}%")
+            else:
+                logger.info(f"Worst-domain improvement: {worst_improvement:.2f} pp")
+                logger.info("Variance reduction: N/A (insufficient variance)")
+
+        logger.info("Experiment completed successfully!")
+        
+        # Update experiment info with success status
+        exp_logger.save_experiment_info(status='completed', exit_code=0)
+        
+    except KeyboardInterrupt:
+        logger.warning("Experiment interrupted by user")
+        exp_logger.save_experiment_info(status='interrupted', exit_code=130)
+        raise
+    except Exception as e:
+        logger.error(f"Experiment failed with error: {e}", exc_info=True)
+        exp_logger.save_experiment_info(status='failed', error=str(e), exit_code=1)
+        raise
+
+
+if __name__ == '__main__':
+    main()
