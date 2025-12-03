@@ -1,4 +1,11 @@
-"""Main entry point for FL-DomainNet experiment."""
+"""Main entry point for FL-DomainNet experiment.
+
+V2 Key Changes:
+- No LoRA, using ResNet50_DomainHeads / ResNet18_DomainHeads
+- θ aggregated every round (not just every K rounds)
+- No calibration or DC training (Phase 1)
+- Optional fair-weighting every K rounds
+"""
 
 import os
 import sys
@@ -9,14 +16,12 @@ from typing import Dict
 import torch
 import yaml
 
-from models.resnet18_lora import ResNet18_EAPH
-from models.resnet50_lora import ResNet50_EAPH
+from models.resnet50_domainheads import ResNet50_DomainHeads, ResNet18_DomainHeads
 from data.domainnet import DomainNetDataset
 from data.partition import build_domain_clients
-from core.trainer import LocalTrainer
+from core.loop import LocalTrainer, run_training
 from core.edge_manager import EdgeManager
-from core.selector import FAPFloatSoftmax
-from core.loop import run_training
+from core.selector import FAPSelector
 from utils.common import set_seed, build_logger
 from utils.experiment import ExperimentLogger
 
@@ -36,33 +41,29 @@ def load_config(config_path: str) -> Dict:
 
 
 def create_model(config: Dict):
-    """Factory for creating backbone models.
+    """Factory for creating backbone models (no LoRA).
 
     Args:
         config: Configuration dictionary
 
     Returns:
-        Model instance (ResNet18_EAPH or ResNet50_EAPH)
+        Model instance (ResNet18_DomainHeads or ResNet50_DomainHeads)
 
     Raises:
         ValueError: If backbone is not supported
     """
-    backbone = config['model'].get('backbone', 'resnet18')
+    backbone = config['model'].get('backbone', 'resnet50')
     
     if backbone == 'resnet18':
-        return ResNet18_EAPH(
+        return ResNet18_DomainHeads(
             num_classes=config['data']['num_classes'],
             domains=config['data']['domains'],
-            lora_rank=config['model']['lora']['rank'],
-            lora_alpha=config['model']['lora']['alpha'],
             pretrained=config['model']['pretrained']
         )
     elif backbone == 'resnet50':
-        return ResNet50_EAPH(
+        return ResNet50_DomainHeads(
             num_classes=config['data']['num_classes'],
             domains=config['data']['domains'],
-            lora_rank=config['model']['lora']['rank'],
-            lora_alpha=config['model']['lora']['alpha'],
             pretrained=config['model']['pretrained']
         )
     else:
@@ -170,6 +171,12 @@ def main():
         dest='no_timestamp',
         help='Disable timestamp-based directory naming'
     )
+    parser.add_argument(
+        '--no-fair-weighting',
+        action='store_true',
+        dest='no_fair_weighting',
+        help='Disable fair-weighting (use standard FedAvg)'
+    )
     args = parser.parse_args()
 
     # Load configuration
@@ -187,6 +194,9 @@ def main():
         print(f"Training for {args.rounds} rounds")
     if args.device:
         config['system']['device'] = args.device
+    if args.no_fair_weighting:
+        config['fair_weighting']['enable'] = False
+        print("Fair-weighting disabled, using standard FedAvg")
 
     # Create experiment logger and directory
     exp_logger = ExperimentLogger(config, args)
@@ -211,6 +221,7 @@ def main():
     logger.info(f"Configuration: {args.config}")
     logger.info(f"Domains: {config['data']['domains']}")
     logger.info(f"Device: {config['system']['device']}")
+    logger.info(f"Fair-weighting: {'enabled' if config.get('fair_weighting', {}).get('enable', False) else 'disabled'}")
 
     # Check CUDA availability
     if config['system']['device'] == 'cuda' and not torch.cuda.is_available():
@@ -223,8 +234,8 @@ def main():
         train_data, val_data = prepare_data(config)
         logger.info(f"Data preparation complete")
 
-        # Initialize model
-        logger.info("Initializing model...")
+        # Initialize model (no LoRA)
+        logger.info("Initializing model (no LoRA)...")
         model = create_model(config)
 
         # Initialize components
@@ -245,16 +256,14 @@ def main():
             device=config['system']['device']
         )
 
-        selector = FAPFloatSoftmax(
+        selector = FAPSelector(
             domains=config['data']['domains'],
             w1=config['selector']['w1'],
             w2=config['selector']['w2'],
-            w3=config['selector']['w3'],
-            w4=config['selector']['w4'],
             tau=config['selector']['tau']
         )
 
-        # Run training with exp_dir passed to loop
+        # Run training
         logger.info("Starting training...")
         metrics = run_training(
             config=config,
@@ -270,8 +279,21 @@ def main():
 
         # Save final metrics
         metrics_path = os.path.join(exp_dir, 'metrics.json')
+        
+        # Convert fair_factors to serializable format
+        serializable_metrics = {}
+        for key, value in metrics.items():
+            if key == 'fair_factors':
+                # Convert None and dict objects to serializable format
+                serializable_metrics[key] = [
+                    v if v is None else {k: float(vv) for k, vv in v.items()}
+                    for v in value
+                ]
+            else:
+                serializable_metrics[key] = value
+        
         with open(metrics_path, 'w') as f:
-            json.dump(metrics, f, indent=2)
+            json.dump(serializable_metrics, f, indent=2)
         logger.info(f"Metrics saved to {metrics_path}")
 
         # Print summary
@@ -281,7 +303,6 @@ def main():
         logger.info(f"Final average accuracy: {metrics['avg_acc'][-1]:.2f}%")
         logger.info(f"Final worst accuracy: {metrics['worst_acc'][-1]:.2f}%")
         logger.info(f"Final variance: {metrics['variance'][-1]:.4f}")
-        logger.info(f"Selected aggregators: {metrics['selected_aggregators']}")
 
         # Check success criteria
         if len(metrics['worst_acc']) > 1:
