@@ -6,7 +6,6 @@ data:
   root: "/root/domainnet"  # Path to DomainNet dataset
   domains: ["clipart", "infograph", "painting", "quickdraw", "real", "sketch"]
   num_classes: 126  # Use 126-class subset
-  offload_pool_enabled: false  # Disabled in v2 Phase 1
 
 # Client partitioning
 partition:
@@ -15,7 +14,6 @@ partition:
   unload_ratio: 0.2  # ρ: fraction of data offloaded to DC (20% of training data)
   val_ratio: 0.1  # Fraction of data for validation
   seed: 42
-  offload_pool_enabled: false  # Disabled in v2 Phase 1
 
 # Model architecture (v2: no LoRA)
 model:
@@ -25,7 +23,7 @@ model:
 
 # Training
 training:
-  total_rounds: 100
+  total_rounds: 50
   local_steps: 5  # Local training steps per client
   batch_size: 32
   clients_participation: 0.2  # Fraction of clients participating per round
@@ -46,14 +44,6 @@ selector:
 # Fair-Weighted Aggregation
 fair_weighting:
   enable: true  # Enable fair-weighted aggregation every K rounds
-
-# DC Training (disabled in v2 Phase 1)
-dc_training:
-  enable: false
-
-# Calibration (disabled in v2 Phase 1)
-calibration:
-  enable: false
 
 # Edge Manager
 edge_manager:

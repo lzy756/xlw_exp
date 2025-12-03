@@ -351,15 +351,18 @@ def run_training(
         domain_phi_weights = {d: [] for d in domains}
 
         for domain in domains:
-            # Load global theta first
-            model.load_state_dict(theta_global, strict=False)
-            
-            # Load domain's current phi
-            phi_state = edge_manager.get_phi(domain)
-            if phi_state is not None:
-                model.load_state_dict(phi_state, strict=False)
+            # Get domain's current phi (will be loaded for each client)
+            domain_phi_state = edge_manager.get_phi(domain)
 
             for client_id in participating_clients[domain]:
+                # IMPORTANT: Load global theta BEFORE each client's training
+                # This ensures each client starts from the same global model
+                model.load_state_dict(theta_global, strict=False)
+                
+                # Load domain's current phi
+                if domain_phi_state is not None:
+                    model.load_state_dict(domain_phi_state, strict=False)
+
                 # Get client's dataset
                 client_data = train_data[domain]['clients'][client_id]
                 client_dataset = DomainNetDataset(
