@@ -14,7 +14,7 @@ data:
   root: "/root/domainnet"
   domains: ["clipart", "infograph", "painting", "quickdraw", "real", "sketch"]
   num_classes: 126
-  offload_pool_enabled: true  # DC clients use offload pool
+  offload_pool_enabled: false  # DC clients use offload pool
 
 # Client partitioning (same as main experiment)
 partition:
@@ -23,7 +23,7 @@ partition:
   unload_ratio: 0.2  # ρ = 20%
   val_ratio: 0.1
   seed: 42
-  offload_pool_enabled: true
+  offload_pool_enabled: false
 
 # Model architecture (single-head, no LoRA)
 model:
@@ -32,7 +32,7 @@ model:
 
 # Training (same hyperparameters as main experiment)
 training:
-  total_rounds: 200
+  total_rounds: 100
   local_steps: 5
   batch_size: 32
   clients_participation: 0.2  # 20% participation rate

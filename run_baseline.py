@@ -10,6 +10,7 @@ import torch
 import yaml
 
 from baseline.models.resnet18_single import ResNet18Single
+from baseline.models.resnet50_single import ResNet50Single
 from data.domainnet import DomainNetDataset
 from data.partition import build_domain_clients
 from baseline.core.loop_baseline import run_baseline_training
@@ -31,19 +32,29 @@ def load_config(config_path: str) -> Dict:
     return config
 
 
-def create_model(config: Dict) -> ResNet18Single:
+def create_model(config: Dict):
     """Create baseline model.
 
     Args:
         config: Configuration dictionary
 
     Returns:
-        ResNet18Single model instance
+        ResNet18Single or ResNet50Single model instance
     """
-    return ResNet18Single(
-        num_classes=config['data']['num_classes'],
-        pretrained=config['model']['pretrained']
-    )
+    backbone = config['model'].get('backbone', 'resnet18_single')
+    num_classes = config['data']['num_classes']
+    pretrained = config['model']['pretrained']
+
+    if backbone == 'resnet50_single':
+        return ResNet50Single(
+            num_classes=num_classes,
+            pretrained=pretrained
+        )
+    else:  # default to resnet18_single
+        return ResNet18Single(
+            num_classes=num_classes,
+            pretrained=pretrained
+        )
 
 
 def prepare_data(config: Dict) -> tuple:

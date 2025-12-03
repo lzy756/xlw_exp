@@ -1,5 +1,5 @@
-# FedProx-Fixed Baseline Configuration
-# FedProx with fixed aggregation point for comparison
+# FedProx-Fixed Baseline Configuration (ResNet50)
+# FedProx with fixed aggregation point for comparison with ResNet50 backbone
 
 # Algorithm
 algo: "fedprox"
@@ -18,7 +18,7 @@ data:
   root: "/root/domainnet"
   domains: ["clipart", "infograph", "painting", "quickdraw", "real", "sketch"]
   num_classes: 126
-  offload_pool_enabled: false  # DC clients use offload pool
+  offload_pool_enabled: false  # Disabled for fair comparison
 
 # Client partitioning (same as main experiment)
 partition:
@@ -27,20 +27,20 @@ partition:
   unload_ratio: 0.2  # ρ = 20%
   val_ratio: 0.1
   seed: 42
-  offload_pool_enabled: false
+  offload_pool_enabled: false  # Disabled for fair comparison
 
-# Model architecture (single-head, no LoRA)
+# Model architecture (single-head ResNet50, no LoRA)
 model:
-  backbone: "resnet18_single"  # Use ResNet18Single
+  backbone: "resnet50_single"  # Use ResNet50Single
   pretrained: true
 
-# Training (same hyperparameters as main experiment)
+# Training (adjusted for ResNet50)
 training:
   total_rounds: 100
   local_steps: 5
-  batch_size: 32
+  batch_size: 16  # Reduced from 32 due to higher memory usage
   clients_participation: 0.2  # 20% participation rate
-  lr: 0.0003  # Single learning rate (3e-4)
+  lr: 0.0001  # Lower learning rate for ResNet50 (1e-4)
   weight_decay: 0.0001
 
 # Logging and checkpointing
@@ -48,7 +48,7 @@ logging:
   log_interval: 1
   checkpoint_interval: 20
   output_dir: "./outputs"
-  exp_name: "fedprox-fixed"
+  exp_name: "fedprox-resnet50-fixed"
   use_timestamp_dir: true
   save_config: true
   save_experiment_info: true
@@ -59,3 +59,11 @@ system:
   device: "cuda"
   seed: 42
   num_workers: 4
+
+# Notes:
+# - ResNet50 uses 2048-d features (vs 512-d for ResNet18)
+# - Batch size reduced to 16 (from 32) to accommodate higher memory usage
+# - Learning rate reduced to 1e-4 (from 3e-4) for more stable training
+# - DC offload pool DISABLED for fair comparison with main method
+# - Proximal term μ=0.01 helps with non-IID data
+# - Requires 16GB+ GPU memory
