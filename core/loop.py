@@ -171,13 +171,15 @@ class LocalTrainer:
         theta_state = {
             k: v.cpu().clone()
             for k, v in self.model.state_dict().items()
-            if not k.startswith('biases.')
+            if not k.startswith('biases.') and not k.startswith('adapters_')
         }
 
         phi_state = {
             k: v.cpu().clone()
             for k, v in self.model.state_dict().items()
             if k == f'biases.{domain}'
+            or k.startswith(f'adapters_down.{domain}')
+            or k.startswith(f'adapters_up.{domain}')
         }
 
         return theta_state, phi_state, train_acc

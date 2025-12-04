@@ -12,20 +12,22 @@ from torchvision import models
 
 
 class ResNet50_DomainHeads(nn.Module):
-    """ResNet50 with global head + per-domain bias (light personalization)."""
+    """ResNet50 with global head + per-domain low-rank adapters."""
 
     def __init__(
         self,
         num_classes: int = 126,
         domains: List[str] = None,
-        pretrained: bool = True
+        pretrained: bool = True,
+        adapter_rank: int = 4
     ):
-        """Initialize ResNet50 with domain-specific heads.
+        """Initialize ResNet50 with domain-specific adapters.
 
         Args:
             num_classes: Number of output classes
             domains: List of domain names
             pretrained: Whether to load pretrained weights
+            adapter_rank: Rank for per-domain low-rank adapters
         """
         super().__init__()
         
@@ -35,6 +37,7 @@ class ResNet50_DomainHeads(nn.Module):
         
         self.num_classes = num_classes
         self.domains = domains
+        self.adapter_rank = adapter_rank
         
         # Load pretrained ResNet50
         weights = models.ResNet50_Weights.IMAGENET1K_V1 if pretrained else None
@@ -61,6 +64,16 @@ class ResNet50_DomainHeads(nn.Module):
         # Lightweight per-domain bias (personalization)
         self.biases = nn.ParameterDict({
             domain: nn.Parameter(torch.zeros(num_classes))
+            for domain in domains
+        })
+
+        # Per-domain low-rank adapters: A_d (C x r) and B_d (r x C)
+        self.adapters_down = nn.ModuleDict({
+            domain: nn.Linear(self._feature_dim, adapter_rank, bias=False)
+            for domain in domains
+        })
+        self.adapters_up = nn.ModuleDict({
+            domain: nn.Linear(adapter_rank, num_classes, bias=False)
             for domain in domains
         })
 
@@ -103,7 +116,9 @@ class ResNet50_DomainHeads(nn.Module):
             Logits tensor of shape (N, num_classes)
         """
         features = self.forward_features(x)
-        return self.fc_global(features) + self.biases[domain]
+        # Low-rank adapter for domain
+        adapter = self.adapters_up[domain](self.adapters_down[domain](features))
+        return self.fc_global(features) + adapter + self.biases[domain]
 
     def parameters_theta(self) -> List[nn.Parameter]:
         """Get backbone parameters (θ) for global aggregation.
@@ -113,7 +128,7 @@ class ResNet50_DomainHeads(nn.Module):
         """
         params = []
         for name, param in self.named_parameters():
-            if not name.startswith('biases.'):
+            if not name.startswith('biases.') and not name.startswith('adapters_'):
                 params.append(param)
         return params
 
@@ -126,7 +141,11 @@ class ResNet50_DomainHeads(nn.Module):
         Returns:
             List of parameters for the domain's head
         """
-        return [self.biases[domain]]
+        return [
+            self.biases[domain],
+            *self.adapters_down[domain].parameters(),
+            *self.adapters_up[domain].parameters()
+        ]
 
     def state_dict_theta(self) -> Dict[str, torch.Tensor]:
         """Export backbone state dict.
@@ -137,7 +156,7 @@ class ResNet50_DomainHeads(nn.Module):
         return {
             k: v.cpu().clone()
             for k, v in self.state_dict().items()
-            if not k.startswith('biases.')
+            if not k.startswith('biases.') and not k.startswith('adapters_')
         }
 
     def state_dict_phi(self, domain: str) -> Dict[str, torch.Tensor]:
@@ -153,17 +172,20 @@ class ResNet50_DomainHeads(nn.Module):
             k: v.cpu().clone()
             for k, v in self.state_dict().items()
             if k == f'biases.{domain}'
+            or k.startswith(f'adapters_down.{domain}')
+            or k.startswith(f'adapters_up.{domain}')
         }
 
 
 class ResNet18_DomainHeads(nn.Module):
-    """ResNet18 with global head + per-domain bias (light personalization)."""
+    """ResNet18 with global head + per-domain low-rank adapters."""
 
     def __init__(
         self,
         num_classes: int = 126,
         domains: List[str] = None,
-        pretrained: bool = True
+        pretrained: bool = True,
+        adapter_rank: int = 4
     ):
         """Initialize ResNet18 with domain-specific heads.
 
@@ -171,6 +193,7 @@ class ResNet18_DomainHeads(nn.Module):
             num_classes: Number of output classes
             domains: List of domain names
             pretrained: Whether to load pretrained weights
+            adapter_rank: Rank for per-domain low-rank adapters
         """
         super().__init__()
         
@@ -180,6 +203,7 @@ class ResNet18_DomainHeads(nn.Module):
         
         self.num_classes = num_classes
         self.domains = domains
+        self.adapter_rank = adapter_rank
         
         # Load pretrained ResNet18
         weights = models.ResNet18_Weights.IMAGENET1K_V1 if pretrained else None
@@ -206,6 +230,16 @@ class ResNet18_DomainHeads(nn.Module):
         # Lightweight per-domain bias
         self.biases = nn.ParameterDict({
             domain: nn.Parameter(torch.zeros(num_classes))
+            for domain in domains
+        })
+
+        # Per-domain low-rank adapters
+        self.adapters_down = nn.ModuleDict({
+            domain: nn.Linear(self._feature_dim, adapter_rank, bias=False)
+            for domain in domains
+        })
+        self.adapters_up = nn.ModuleDict({
+            domain: nn.Linear(adapter_rank, num_classes, bias=False)
             for domain in domains
         })
 
@@ -248,7 +282,8 @@ class ResNet18_DomainHeads(nn.Module):
             Logits tensor of shape (N, num_classes)
         """
         features = self.forward_features(x)
-        return self.fc_global(features) + self.biases[domain]
+        adapter = self.adapters_up[domain](self.adapters_down[domain](features))
+        return self.fc_global(features) + adapter + self.biases[domain]
 
     def parameters_theta(self) -> List[nn.Parameter]:
         """Get backbone parameters (θ) for global aggregation.
@@ -258,7 +293,7 @@ class ResNet18_DomainHeads(nn.Module):
         """
         params = []
         for name, param in self.named_parameters():
-            if not name.startswith('biases.'):
+            if not name.startswith('biases.') and not name.startswith('adapters_'):
                 params.append(param)
         return params
 
@@ -271,7 +306,11 @@ class ResNet18_DomainHeads(nn.Module):
         Returns:
             List of parameters for the domain's head
         """
-        return [self.biases[domain]]
+        return [
+            self.biases[domain],
+            *self.adapters_down[domain].parameters(),
+            *self.adapters_up[domain].parameters()
+        ]
 
     def state_dict_theta(self) -> Dict[str, torch.Tensor]:
         """Export backbone state dict.
@@ -282,7 +321,7 @@ class ResNet18_DomainHeads(nn.Module):
         return {
             k: v.cpu().clone()
             for k, v in self.state_dict().items()
-            if not k.startswith('biases.')
+            if not k.startswith('biases.') and not k.startswith('adapters_')
         }
 
     def state_dict_phi(self, domain: str) -> Dict[str, torch.Tensor]:
@@ -298,4 +337,6 @@ class ResNet18_DomainHeads(nn.Module):
             k: v.cpu().clone()
             for k, v in self.state_dict().items()
             if k == f'biases.{domain}'
+            or k.startswith(f'adapters_down.{domain}')
+            or k.startswith(f'adapters_up.{domain}')
         }

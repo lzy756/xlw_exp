@@ -58,13 +58,15 @@ def create_model(config: Dict):
         return ResNet18_DomainHeads(
             num_classes=config['data']['num_classes'],
             domains=config['data']['domains'],
-            pretrained=config['model']['pretrained']
+            pretrained=config['model']['pretrained'],
+            adapter_rank=config['model'].get('adapter_rank', 4)
         )
     elif backbone == 'resnet50':
         return ResNet50_DomainHeads(
             num_classes=config['data']['num_classes'],
             domains=config['data']['domains'],
-            pretrained=config['model']['pretrained']
+            pretrained=config['model']['pretrained'],
+            adapter_rank=config['model'].get('adapter_rank', 4)
         )
     else:
         raise ValueError(

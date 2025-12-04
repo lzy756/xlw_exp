@@ -19,6 +19,7 @@ partition:
 model:
   backbone: "resnet50"  # Backbone model: "resnet18" or "resnet50"
   pretrained: true
+  adapter_rank: 4  # Rank for per-domain low-rank adapters (logits)
   # LoRA removed in v2
 
 # Training
