@@ -16,9 +16,10 @@ from typing import Dict
 import torch
 import yaml
 
-from models.resnet50_domainheads import ResNet50_DomainHeads, ResNet18_DomainHeads
+from models.resnet50_domainheads import ResNet50_DomainHeads, ResNet18_DomainHeads, MobileNetV3_DomainHeads
 from data.domainnet import DomainNetDataset
 from data.partition import build_domain_clients
+from data.pacs import PACSDataset, build_domain_clients as build_domain_clients_pacs
 from core.loop import LocalTrainer, run_training
 from core.edge_manager import EdgeManager
 from core.selector import FAPSelector
@@ -68,9 +69,16 @@ def create_model(config: Dict):
             pretrained=config['model']['pretrained'],
             adapter_rank=config['model'].get('adapter_rank', 4)
         )
+    elif backbone == 'mobilenetv3_small':
+        return MobileNetV3_DomainHeads(
+            num_classes=config['data']['num_classes'],
+            domains=config['data']['domains'],
+            pretrained=config['model']['pretrained'],
+            adapter_rank=config['model'].get('adapter_rank', 4)
+        )
     else:
         raise ValueError(
-            f"Unsupported backbone: {backbone}. Choose 'resnet18' or 'resnet50'."
+            f"Unsupported backbone: {backbone}. Choose 'resnet18', 'resnet50', or 'mobilenetv3_small'."
         )
 
 
@@ -83,6 +91,11 @@ def prepare_data(config: Dict) -> tuple:
     Returns:
         Tuple of (train_data, val_data)
     """
+    # Choose dataset based on domains/num_classes
+    use_pacs = set(config['data']['domains']) == set(["photo", "art_painting", "cartoon", "sketch"]) and config['data']['num_classes'] == 7
+    DatasetCls = PACSDataset if use_pacs else DomainNetDataset
+    build_fn = build_domain_clients_pacs if use_pacs else build_domain_clients
+
     # Load dataset index
     index_path = os.path.join(config['data']['root'], 'index.json')
 
@@ -90,7 +103,7 @@ def prepare_data(config: Dict) -> tuple:
     if not os.path.exists(index_path):
         print(f"Warning: index.json not found at {index_path}")
         print("Creating dummy index for testing...")
-        dummy_dataset = DomainNetDataset(config['data']['root'])
+        _ = DatasetCls(config['data']['root'])
 
     with open(index_path, 'r') as f:
         index = json.load(f)
@@ -101,7 +114,7 @@ def prepare_data(config: Dict) -> tuple:
 
     for domain_idx, domain in enumerate(config['data']['domains']):
         # Build client partitions for this domain
-        domain_data = build_domain_clients(
+        domain_data = build_fn(
             index=index,
             domain=domain,
             num_clients=config['partition']['num_clients_per_domain'],
@@ -119,7 +132,7 @@ def prepare_data(config: Dict) -> tuple:
         for client_data in domain_data['clients'].values():
             val_indices.extend(client_data['val'])
 
-        val_data[domain] = DomainNetDataset(
+        val_data[domain] = DatasetCls(
             root=config['data']['root'],
             indices=val_indices,
             train=False

@@ -1,0 +1,56 @@
+# PACS federated config with MobileNetV3-Small + low-rank adapters
+
+data:
+  root: "/root/pacs"  # path to PACS root containing index.json
+  domains: ["photo", "art_painting", "cartoon", "sketch"]
+  num_classes: 7
+
+partition:
+  num_clients_per_domain: 10
+  alpha: 0.5
+  unload_ratio: 0.0
+  val_ratio: 0.1
+  seed: 42
+
+model:
+  backbone: "mobilenetv3_small"
+  pretrained: true
+  adapter_rank: 4
+
+training:
+  total_rounds: 50
+  local_steps: 2
+  batch_size: 64
+  clients_participation: 0.2
+  lr_theta: 0.0003
+  lr_phi: 0.0005
+  weight_decay: 0.0001
+  cosine_lr: true
+
+selector:
+  K: 5
+  w1: 0.5
+  w2: 0.1
+  tau: 2.0
+
+fair_weighting:
+  enable: true
+
+edge_manager:
+  ema_beta: 0.9
+  proj_dim: 64
+
+logging:
+  log_interval: 1
+  checkpoint_interval: 10
+  output_dir: "./outputs"
+  exp_name: "pacs"
+  use_timestamp_dir: true
+  save_config: true
+  save_experiment_info: true
+  timestamp_format: "%Y-%m-%d-%H-%M"
+
+system:
+  device: "cuda"
+  seed: 42
+  num_workers: 4

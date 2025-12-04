@@ -9,6 +9,7 @@ from typing import Dict, List
 import torch
 import torch.nn as nn
 from torchvision import models
+from torchvision.models import mobilenet_v3_small, MobileNet_V3_Small_Weights
 
 
 class ResNet50_DomainHeads(nn.Module):
@@ -333,6 +334,93 @@ class ResNet18_DomainHeads(nn.Module):
         Returns:
             State dict containing only the specified domain's head parameters
         """
+        return {
+            k: v.cpu().clone()
+            for k, v in self.state_dict().items()
+            if k == f'biases.{domain}'
+            or k.startswith(f'adapters_down.{domain}')
+            or k.startswith(f'adapters_up.{domain}')
+        }
+
+
+class MobileNetV3_DomainHeads(nn.Module):
+    """MobileNetV3-Small with global head + per-domain low-rank adapters."""
+
+    def __init__(
+        self,
+        num_classes: int = 126,
+        domains: List[str] = None,
+        pretrained: bool = True,
+        adapter_rank: int = 4
+    ):
+        super().__init__()
+        if domains is None:
+            domains = ['clipart', 'infograph', 'painting',
+                       'quickdraw', 'real', 'sketch']
+        self.num_classes = num_classes
+        self.domains = domains
+        self.adapter_rank = adapter_rank
+
+        weights = MobileNet_V3_Small_Weights.IMAGENET1K_V1 if pretrained else None
+        mobilenet = mobilenet_v3_small(weights=weights)
+
+        self.features = mobilenet.features
+        self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
+        self._feature_dim = mobilenet.classifier[0].in_features  # 576
+
+        # Shared global classifier
+        self.fc_global = nn.Linear(self._feature_dim, num_classes)
+        nn.init.xavier_uniform_(self.fc_global.weight)
+        nn.init.zeros_(self.fc_global.bias)
+
+        # Domain-specific adapters + bias
+        self.biases = nn.ParameterDict({
+            domain: nn.Parameter(torch.zeros(num_classes))
+            for domain in domains
+        })
+        self.adapters_down = nn.ModuleDict({
+            domain: nn.Linear(self._feature_dim, adapter_rank, bias=False)
+            for domain in domains
+        })
+        self.adapters_up = nn.ModuleDict({
+            domain: nn.Linear(adapter_rank, num_classes, bias=False)
+            for domain in domains
+        })
+
+    @property
+    def feature_dim(self) -> int:
+        return self._feature_dim
+
+    def forward_features(self, x: torch.Tensor) -> torch.Tensor:
+        x = self.features(x)
+        x = self.avgpool(x)
+        x = torch.flatten(x, 1)
+        return x
+
+    def forward(self, x: torch.Tensor, domain: str) -> torch.Tensor:
+        feats = self.forward_features(x)
+        adapter = self.adapters_up[domain](self.adapters_down[domain](feats))
+        return self.fc_global(feats) + adapter + self.biases[domain]
+
+    def parameters_theta(self) -> List[nn.Parameter]:
+        return [p for n, p in self.named_parameters()
+                if not n.startswith('biases.') and not n.startswith('adapters_')]
+
+    def parameters_phi(self, domain: str) -> List[nn.Parameter]:
+        return [
+            self.biases[domain],
+            *self.adapters_down[domain].parameters(),
+            *self.adapters_up[domain].parameters()
+        ]
+
+    def state_dict_theta(self) -> Dict[str, torch.Tensor]:
+        return {
+            k: v.cpu().clone()
+            for k, v in self.state_dict().items()
+            if not k.startswith('biases.') and not k.startswith('adapters_')
+        }
+
+    def state_dict_phi(self, domain: str) -> Dict[str, torch.Tensor]:
         return {
             k: v.cpu().clone()
             for k, v in self.state_dict().items()
