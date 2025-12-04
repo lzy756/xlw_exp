@@ -227,6 +227,8 @@ def main():
     if config['system']['device'] == 'cuda' and not torch.cuda.is_available():
         logger.warning("CUDA not available, falling back to CPU")
         config['system']['device'] = 'cpu'
+    elif config['system']['device'] == 'cuda':
+        torch.backends.cudnn.benchmark = True  # Enable autotune for speed
 
     try:
         # Prepare data

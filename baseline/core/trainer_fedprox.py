@@ -99,7 +99,8 @@ class LocalTrainerFedProx(LocalTrainerFedAvg):
             batch_size=batch_size,
             shuffle=True,
             num_workers=2,
-            pin_memory=True if self.device == 'cuda' else False
+            pin_memory=True if self.device == 'cuda' else False,
+            persistent_workers=True
         )
 
         # Setup optimizer for all parameters
@@ -108,6 +109,7 @@ class LocalTrainerFedProx(LocalTrainerFedAvg):
             lr=self.lr,
             weight_decay=self.weight_decay
         )
+        scaler = torch.cuda.amp.GradScaler(enabled=(self.device == 'cuda'))
 
         # Local training with proximal term
         for step in range(local_steps):
@@ -121,18 +123,20 @@ class LocalTrainerFedProx(LocalTrainerFedAvg):
                 optimizer.zero_grad()
 
                 # Forward pass
-                outputs = self.model(images)
-                ce_loss = self.criterion(outputs, labels)
+                with torch.cuda.amp.autocast(enabled=(self.device == 'cuda')):
+                    outputs = self.model(images)
+                    ce_loss = self.criterion(outputs, labels)
 
                 # Compute proximal term: (μ/2)||w - w_t||²
                 prox_loss = self._compute_proximal_term(w_global_snapshot)
                 total_loss = ce_loss + (self.mu / 2.0) * prox_loss
 
                 # Backward pass
-                total_loss.backward()
+                scaler.scale(total_loss).backward()
 
                 # Update parameters
-                optimizer.step()
+                scaler.step(optimizer)
+                scaler.update()
 
         # Extract state dictionary
         state_dict = self.model.state_dict_global()

@@ -17,14 +17,14 @@ partition:
 
 # Model architecture (v2: no LoRA)
 model:
-  backbone: "resnet50"  # Backbone model: "resnet18" or "resnet50"
+  backbone: "resnet18"  # Backbone model: "resnet18" or "resnet50"
   pretrained: true
   # LoRA removed in v2
 
 # Training
 training:
   total_rounds: 50
-  local_steps: 5  # Local training steps per client
+  local_steps: 2  # Local training steps per client
   batch_size: 32
   clients_participation: 0.2  # Fraction of clients participating per round
 

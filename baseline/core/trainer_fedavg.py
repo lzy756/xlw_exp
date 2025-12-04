@@ -71,7 +71,8 @@ class LocalTrainerFedAvg:
             batch_size=batch_size,
             shuffle=True,
             num_workers=2,
-            pin_memory=True if self.device == 'cuda' else False
+            pin_memory=True if self.device == 'cuda' else False,
+            persistent_workers=True
         )
 
         # Setup optimizer for all parameters
@@ -80,6 +81,7 @@ class LocalTrainerFedAvg:
             lr=self.lr,
             weight_decay=self.weight_decay
         )
+        scaler = torch.cuda.amp.GradScaler(enabled=(self.device == 'cuda'))
 
         # Local training
         for step in range(local_steps):
@@ -93,14 +95,16 @@ class LocalTrainerFedAvg:
                 optimizer.zero_grad()
 
                 # Forward pass (domain ignored for single-head model)
-                outputs = self.model(images)
-                loss = self.criterion(outputs, labels)
+                with torch.cuda.amp.autocast(enabled=(self.device == 'cuda')):
+                    outputs = self.model(images)
+                    loss = self.criterion(outputs, labels)
 
                 # Backward pass
-                loss.backward()
+                scaler.scale(loss).backward()
 
                 # Update parameters
-                optimizer.step()
+                scaler.step(optimizer)
+                scaler.update()
 
         # Extract state dictionary (move to CPU to save GPU memory)
         state_dict = self.model.state_dict_global()
@@ -132,7 +136,8 @@ class LocalTrainerFedAvg:
             batch_size=batch_size,
             shuffle=False,
             num_workers=2,
-            pin_memory=True if self.device == 'cuda' else False
+            pin_memory=True if self.device == 'cuda' else False,
+            persistent_workers=True
         )
 
         # Evaluation metrics
@@ -147,8 +152,9 @@ class LocalTrainerFedAvg:
                 labels = labels.to(self.device)
 
                 # Forward pass
-                outputs = self.model(images)
-                loss = self.criterion(outputs, labels)
+                with torch.cuda.amp.autocast(enabled=(self.device == 'cuda')):
+                    outputs = self.model(images)
+                    loss = self.criterion(outputs, labels)
 
                 # Track metrics
                 total_loss += loss.item() * labels.size(0)

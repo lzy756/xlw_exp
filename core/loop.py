@@ -94,7 +94,8 @@ class LocalTrainer:
             batch_size=batch_size,
             shuffle=True,
             num_workers=2,
-            pin_memory=True if self.device == 'cuda' else False
+            pin_memory=True if self.device == 'cuda' else False,
+            persistent_workers=True
         )
 
         # Setup dual optimizers
@@ -119,6 +120,12 @@ class LocalTrainer:
             total_iters = local_steps * len(dataloader)
             scheduler_theta = CosineAnnealingLR(optimizer_theta, T_max=max(1, total_iters))
             scheduler_phi = CosineAnnealingLR(optimizer_phi, T_max=max(1, total_iters))
+        else:
+            scheduler_theta = scheduler_phi = None
+
+        # AMP scaler (shared for both optimizers)
+        use_amp = self.device == 'cuda'
+        scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
 
         # Training metrics
         correct = 0
@@ -134,16 +141,18 @@ class LocalTrainer:
                 optimizer_theta.zero_grad()
                 optimizer_phi.zero_grad()
 
-                # Forward pass
-                outputs = self.model(images, domain)
-                loss = self.criterion(outputs, labels)
+                # Forward pass with AMP
+                with torch.cuda.amp.autocast(enabled=use_amp):
+                    outputs = self.model(images, domain)
+                    loss = self.criterion(outputs, labels)
 
                 # Backward pass
-                loss.backward()
+                scaler.scale(loss).backward()
 
                 # Update parameters
-                optimizer_theta.step()
-                optimizer_phi.step()
+                scaler.step(optimizer_theta)
+                scaler.step(optimizer_phi)
+                scaler.update()
 
                 # Update schedulers
                 if self.cosine_lr:
@@ -199,7 +208,8 @@ class LocalTrainer:
             batch_size=batch_size,
             shuffle=False,
             num_workers=2,
-            pin_memory=True if self.device == 'cuda' else False
+            pin_memory=True if self.device == 'cuda' else False,
+            persistent_workers=True
         )
 
         # Evaluation metrics
@@ -215,14 +225,15 @@ class LocalTrainer:
                 labels = labels.to(self.device)
 
                 # Extract features if edge_manager provided
-                if edge_manager is not None:
-                    features = self.model.forward_features(images)
-                    all_features.append(features.cpu())
-                    all_labels.append(labels.cpu())
+                with torch.cuda.amp.autocast(enabled=self.device == 'cuda'):
+                    if edge_manager is not None:
+                        features = self.model.forward_features(images)
+                        all_features.append(features.cpu())
+                        all_labels.append(labels.cpu())
 
-                # Forward pass
-                outputs = self.model(images, domain)
-                loss = self.criterion(outputs, labels)
+                    # Forward pass
+                    outputs = self.model(images, domain)
+                    loss = self.criterion(outputs, labels)
 
                 # Track metrics
                 total_loss += loss.item() * labels.size(0)
