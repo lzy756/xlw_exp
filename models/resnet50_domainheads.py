@@ -1,10 +1,8 @@
-"""ResNet50 with domain-specific heads (no LoRA).
+"""ResNet50/ResNet18 with shared global head + lightweight domain bias.
 
-This module implements the v2 simplified architecture:
-- Backbone θ: ResNet50 conv1 → layer4 → avgpool (2048-dim features)
-- Heads φ_e: One Linear(2048, num_classes) per domain
-
-This follows the FedPer paradigm: shared backbone + personalized heads.
+Shared backbone + single global classifier (θ), plus per-domain bias (φ_e).
+This keeps most capacity global while allowing small domain-specific
+adjustment without fragmenting data across full heads.
 """
 
 from typing import Dict, List
@@ -14,14 +12,7 @@ from torchvision import models
 
 
 class ResNet50_DomainHeads(nn.Module):
-    """ResNet50 with domain-specific classification heads.
-    
-    Architecture:
-    - Backbone θ: ResNet50 conv1 → layer4 → avgpool (2048-dim features)
-    - Heads φ_e: One Linear(2048, num_classes) per domain
-    
-    This follows the FedPer paradigm: shared backbone + personalized heads.
-    """
+    """ResNet50 with global head + per-domain bias (light personalization)."""
 
     def __init__(
         self,
@@ -62,16 +53,16 @@ class ResNet50_DomainHeads(nn.Module):
         
         self._feature_dim = 2048
         
-        # Domain-specific heads
-        self.heads = nn.ModuleDict({
-            domain: nn.Linear(self._feature_dim, num_classes)
+        # Shared global classifier
+        self.fc_global = nn.Linear(self._feature_dim, num_classes)
+        nn.init.xavier_uniform_(self.fc_global.weight)
+        nn.init.zeros_(self.fc_global.bias)
+
+        # Lightweight per-domain bias (personalization)
+        self.biases = nn.ParameterDict({
+            domain: nn.Parameter(torch.zeros(num_classes))
             for domain in domains
         })
-        
-        # Initialize heads
-        for head in self.heads.values():
-            nn.init.xavier_uniform_(head.weight)
-            nn.init.zeros_(head.bias)
 
     @property
     def feature_dim(self) -> int:
@@ -112,7 +103,7 @@ class ResNet50_DomainHeads(nn.Module):
             Logits tensor of shape (N, num_classes)
         """
         features = self.forward_features(x)
-        return self.heads[domain](features)
+        return self.fc_global(features) + self.biases[domain]
 
     def parameters_theta(self) -> List[nn.Parameter]:
         """Get backbone parameters (θ) for global aggregation.
@@ -122,7 +113,7 @@ class ResNet50_DomainHeads(nn.Module):
         """
         params = []
         for name, param in self.named_parameters():
-            if 'heads.' not in name:
+            if not name.startswith('biases.'):
                 params.append(param)
         return params
 
@@ -135,7 +126,7 @@ class ResNet50_DomainHeads(nn.Module):
         Returns:
             List of parameters for the domain's head
         """
-        return list(self.heads[domain].parameters())
+        return [self.biases[domain]]
 
     def state_dict_theta(self) -> Dict[str, torch.Tensor]:
         """Export backbone state dict.
@@ -146,7 +137,7 @@ class ResNet50_DomainHeads(nn.Module):
         return {
             k: v.cpu().clone()
             for k, v in self.state_dict().items()
-            if 'heads.' not in k
+            if not k.startswith('biases.')
         }
 
     def state_dict_phi(self, domain: str) -> Dict[str, torch.Tensor]:
@@ -161,19 +152,12 @@ class ResNet50_DomainHeads(nn.Module):
         return {
             k: v.cpu().clone()
             for k, v in self.state_dict().items()
-            if f'heads.{domain}' in k
+            if k == f'biases.{domain}'
         }
 
 
 class ResNet18_DomainHeads(nn.Module):
-    """ResNet18 with domain-specific classification heads.
-    
-    Architecture:
-    - Backbone θ: ResNet18 conv1 → layer4 → avgpool (512-dim features)
-    - Heads φ_e: One Linear(512, num_classes) per domain
-    
-    This follows the FedPer paradigm: shared backbone + personalized heads.
-    """
+    """ResNet18 with global head + per-domain bias (light personalization)."""
 
     def __init__(
         self,
@@ -214,16 +198,16 @@ class ResNet18_DomainHeads(nn.Module):
         
         self._feature_dim = 512
         
-        # Domain-specific heads
-        self.heads = nn.ModuleDict({
-            domain: nn.Linear(self._feature_dim, num_classes)
+        # Shared global classifier
+        self.fc_global = nn.Linear(self._feature_dim, num_classes)
+        nn.init.xavier_uniform_(self.fc_global.weight)
+        nn.init.zeros_(self.fc_global.bias)
+
+        # Lightweight per-domain bias
+        self.biases = nn.ParameterDict({
+            domain: nn.Parameter(torch.zeros(num_classes))
             for domain in domains
         })
-        
-        # Initialize heads
-        for head in self.heads.values():
-            nn.init.xavier_uniform_(head.weight)
-            nn.init.zeros_(head.bias)
 
     @property
     def feature_dim(self) -> int:
@@ -264,7 +248,7 @@ class ResNet18_DomainHeads(nn.Module):
             Logits tensor of shape (N, num_classes)
         """
         features = self.forward_features(x)
-        return self.heads[domain](features)
+        return self.fc_global(features) + self.biases[domain]
 
     def parameters_theta(self) -> List[nn.Parameter]:
         """Get backbone parameters (θ) for global aggregation.
@@ -274,7 +258,7 @@ class ResNet18_DomainHeads(nn.Module):
         """
         params = []
         for name, param in self.named_parameters():
-            if 'heads.' not in name:
+            if not name.startswith('biases.'):
                 params.append(param)
         return params
 
@@ -287,7 +271,7 @@ class ResNet18_DomainHeads(nn.Module):
         Returns:
             List of parameters for the domain's head
         """
-        return list(self.heads[domain].parameters())
+        return [self.biases[domain]]
 
     def state_dict_theta(self) -> Dict[str, torch.Tensor]:
         """Export backbone state dict.
@@ -298,7 +282,7 @@ class ResNet18_DomainHeads(nn.Module):
         return {
             k: v.cpu().clone()
             for k, v in self.state_dict().items()
-            if 'heads.' not in k
+            if not k.startswith('biases.')
         }
 
     def state_dict_phi(self, domain: str) -> Dict[str, torch.Tensor]:
@@ -313,5 +297,5 @@ class ResNet18_DomainHeads(nn.Module):
         return {
             k: v.cpu().clone()
             for k, v in self.state_dict().items()
-            if f'heads.{domain}' in k
+            if k == f'biases.{domain}'
         }

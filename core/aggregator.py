@@ -73,7 +73,7 @@ def aggregate_theta(
     for theta_state in client_theta_list:
         filtered = {
             k: v for k, v in theta_state.items()
-            if 'heads.' not in k
+            if not k.startswith('biases.')
         }
         filtered_theta_list.append(filtered)
 
@@ -102,7 +102,7 @@ def aggregate_phi_domain(
     for phi_state in client_phi_list:
         filtered = {
             k: v for k, v in phi_state.items()
-            if f'heads.{domain}' in k
+            if k == f'biases.{domain}'
         }
         filtered_phi_list.append(filtered)
 

@@ -162,13 +162,13 @@ class LocalTrainer:
         theta_state = {
             k: v.cpu().clone()
             for k, v in self.model.state_dict().items()
-            if 'heads.' not in k
+            if not k.startswith('biases.')
         }
 
         phi_state = {
             k: v.cpu().clone()
             for k, v in self.model.state_dict().items()
-            if f'heads.{domain}' in k
+            if k == f'biases.{domain}'
         }
 
         return theta_state, phi_state, train_acc
@@ -303,7 +303,7 @@ def run_training(
     theta_global = {
         k: v.cpu().clone()
         for k, v in model.state_dict().items()
-        if 'heads.' not in k
+        if not k.startswith('biases.')
     }
 
     # Track metrics
