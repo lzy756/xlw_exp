@@ -139,6 +139,8 @@ class EdgeManager:
 
         # Project features to lower dimension
         with torch.no_grad():
+            # Align dtype for mixed precision (AMP may output half)
+            feats = feats.to(self.proj.dtype)
             projected_feats = feats @ self.proj  # N x proj_dim
 
             # Accumulate per-class prototypes
