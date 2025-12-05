@@ -1,0 +1,92 @@
+# PACS Dataset Configuration with CNN5
+# 5-layer CNN + Low-rank feature adapters for federated domain generalization
+# Main personalization scheme: backbone (θ) aggregated globally, adapters (φ) kept local
+# Training from scratch (no pretrained weights)
+
+# Dataset
+data:
+  dataset: "pacs"
+  root: null  # Use HuggingFace cache (auto-download)
+  domains: ["photo", "art_painting", "cartoon", "sketch"]
+  num_classes: 7
+  img_size: 224  # Standard size for consistency
+
+# Client partitioning
+partition:
+  num_clients_per_domain: 10  # 4 domains × 10 clients = 40 total
+  alpha: 0.5  # Dirichlet concentration (moderate heterogeneity)
+  unload_ratio: 0.0  # No data offloading for PACS
+  val_ratio: 0.1  # 10% for validation
+  seed: 42
+
+# Model architecture (CNN5 with feature adapters)
+model:
+  backbone: "cnn5"
+  pretrained: false  # CNN5 trains from scratch
+  adapter_rank: 16  # Feature-level adapter rank (larger for feature adaptation)
+
+# Training
+training:
+  total_rounds: 100  # More rounds for training from scratch
+  local_steps: 5  # More local steps for personalization
+  batch_size: 32  # Batch size per client
+  clients_participation: 0.2  # 20% clients per round (8 clients)
+
+  # Learning rates (higher for training from scratch)
+  lr_theta: 0.01  # Backbone learning rate
+  lr_phi: 0.01  # Adapter learning rate (same scale since both train from scratch)
+  weight_decay: 0.0001
+  momentum: 0.9
+  cosine_lr: true  # Cosine annealing for smoother convergence
+
+  # AMP for faster training
+  use_amp: true
+
+# FAP Selector (disabled for basic personalization)
+selector:
+  K: 0  # Disabled
+  w1: 0.0
+  w2: 0.0
+  tau: 1.0
+
+# Fair-Weighted Aggregation (disabled)
+fair_weighting:
+  enable: false
+
+# Edge Manager
+edge_manager:
+  ema_beta: 0.9
+  proj_dim: 64
+
+# Data augmentation (standard for PACS)
+augmentation:
+  train:
+    resize: 256
+    crop_size: 224
+    horizontal_flip: 0.5
+    color_jitter:
+      brightness: 0.2
+      contrast: 0.2
+      saturation: 0.2
+      hue: 0.05
+  test:
+    resize: 256
+    crop_size: 224
+
+# Logging and checkpointing
+logging:
+  log_interval: 1
+  checkpoint_interval: 20
+  output_dir: "./outputs"
+  exp_name: "pacs_cnn5_lora"
+  use_timestamp_dir: true
+  save_config: true
+  save_experiment_info: true
+
+# System
+system:
+  device: "cuda"
+  seed: 42
+  num_workers: 4
+  pin_memory: true
+  cudnn_benchmark: true

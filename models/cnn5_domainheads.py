@@ -1,9 +1,12 @@
 """5-layer CNN with domain-specific heads and adapters.
 
 A simple 5-layer CNN model without pretrained weights, with support for
-domain-specific biases and low-rank adapters. Unlike pretrained ResNet
+domain-specific biases and low-rank feature adapters. Unlike pretrained ResNet
 models, this model starts from random initialization and is more
 sensitive to domain shift and distribution heterogeneity.
+
+The feature adapters map features to a low-rank space and back, adding a
+residual to adapt shared features to domain-specific distributions.
 """
 
 from typing import Dict, List
@@ -12,7 +15,7 @@ import torch.nn as nn
 
 
 class CNN5_DomainHeads(nn.Module):
-    """5-layer CNN with global head + per-domain low-rank adapters.
+    """5-layer CNN with global head + per-domain low-rank feature adapters.
 
     Architecture:
         Conv1: 3 -> 32 channels, 3x3 kernel, stride 1, padding 1
@@ -21,10 +24,13 @@ class CNN5_DomainHeads(nn.Module):
         Conv4: 128 -> 256 channels, 3x3 kernel, stride 1, padding 1
         Conv5: 256 -> 512 channels, 3x3 kernel, stride 1, padding 1
         Global Average Pooling
+        Dropout (p=0.5)
+        Feature Adapter: F_adapted = F + Adapter(F)
         FC Global: 512 -> num_classes
-        Per-domain bias + low-rank adapter
+        Per-domain bias
 
     Each conv layer is followed by BatchNorm, ReLU, and MaxPool2d.
+    Designed for PACS from scratch training.
     """
 
     def __init__(
@@ -32,16 +38,16 @@ class CNN5_DomainHeads(nn.Module):
         num_classes: int = 7,
         domains: List[str] = None,
         pretrained: bool = False,  # Ignored, kept for API compatibility
-        adapter_rank: int = 4,
+        adapter_rank: int = 16,  # Larger rank for feature-level adaptation
         in_channels: int = 3
     ):
-        """Initialize 5-layer CNN with domain-specific adapters.
+        """Initialize 5-layer CNN with domain-specific feature adapters.
 
         Args:
             num_classes: Number of output classes
             domains: List of domain names
             pretrained: Ignored, kept for API compatibility
-            adapter_rank: Rank for per-domain low-rank adapters
+            adapter_rank: Rank for per-domain low-rank feature adapters
             in_channels: Number of input channels (default 3 for RGB)
         """
         super().__init__()
@@ -53,7 +59,7 @@ class CNN5_DomainHeads(nn.Module):
         self.domains = domains
         self.adapter_rank = adapter_rank
 
-        # Convolutional layers
+        # Convolutional layers (Backbone)
         self.conv1 = self._make_conv_block(in_channels, 32)
         self.conv2 = self._make_conv_block(32, 64)
         self.conv3 = self._make_conv_block(64, 128)
@@ -66,6 +72,9 @@ class CNN5_DomainHeads(nn.Module):
         # Feature dimension
         self._feature_dim = 512
 
+        # Dropout to prevent overfitting on PACS
+        self.dropout = nn.Dropout(p=0.5)
+
         # Shared global classifier
         self.fc_global = nn.Linear(self._feature_dim, num_classes)
 
@@ -75,15 +84,19 @@ class CNN5_DomainHeads(nn.Module):
             for domain in domains
         })
 
-        # Per-domain low-rank adapters: A_d (C x r) and B_d (r x C)
+        # Per-domain low-rank feature adapters: F_adapted = F + Up(Act(Down(F)))
+        # Maps features to low-rank space and back as residual
         self.adapters_down = nn.ModuleDict({
             domain: nn.Linear(self._feature_dim, adapter_rank, bias=False)
             for domain in domains
         })
         self.adapters_up = nn.ModuleDict({
-            domain: nn.Linear(adapter_rank, num_classes, bias=False)
+            domain: nn.Linear(adapter_rank, self._feature_dim, bias=False)
             for domain in domains
         })
+
+        # Activation function for adapter
+        self.adapter_act = nn.ReLU()
 
         # Initialize weights
         self._initialize_weights()
@@ -118,6 +131,10 @@ class CNN5_DomainHeads(nn.Module):
                 if m.bias is not None:
                     nn.init.zeros_(m.bias)
 
+        # Initialize adapter up-projection to near-zero to preserve shared features at start
+        for domain in self.domains:
+            nn.init.zeros_(self.adapters_up[domain].weight)
+
     @property
     def feature_dim(self) -> int:
         """Return feature dimension (512 for this CNN)."""
@@ -143,19 +160,31 @@ class CNN5_DomainHeads(nn.Module):
         return x
 
     def forward(self, x: torch.Tensor, domain: str) -> torch.Tensor:
-        """Forward pass with domain-specific head.
+        """Forward pass with domain-specific feature adaptation.
 
         Args:
             x: Input tensor of shape (N, C, H, W)
-            domain: Domain name for head selection
+            domain: Domain name for adapter selection
 
         Returns:
             Logits tensor of shape (N, num_classes)
         """
+        # 1. Extract shared features
         features = self.forward_features(x)
-        # Low-rank adapter for domain
-        adapter = self.adapters_up[domain](self.adapters_down[domain](features))
-        return self.fc_global(features) + adapter + self.biases[domain]
+
+        # 2. Apply Dropout
+        features = self.dropout(features)
+
+        # 3. Apply feature adapter (Residual connection: F_adapted = F + Adapter(F))
+        # This aligns shared features to domain-specific distribution
+        adapter_h = self.adapters_down[domain](features)
+        adapter_h = self.adapter_act(adapter_h)
+        delta_features = self.adapters_up[domain](adapter_h)
+
+        adapted_features = features + delta_features
+
+        # 4. Shared classifier + domain bias
+        return self.fc_global(adapted_features) + self.biases[domain]
 
     def parameters_theta(self) -> List[nn.Parameter]:
         """Get backbone parameters (θ) for global aggregation.
