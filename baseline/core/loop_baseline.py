@@ -9,8 +9,9 @@ import random
 from typing import Dict, List, Optional
 import torch
 import json
+from torch.utils.data import Dataset
 
-from data.domainnet import DomainNetDataset
+from data.factory import create_dataset
 from baseline.core.trainer_fedavg import LocalTrainerFedAvg
 from baseline.core.trainer_fedprox import LocalTrainerFedProx
 from baseline.core.selector_fixed import FixedSelector
@@ -23,7 +24,7 @@ def run_baseline_training(
     config: Dict,
     model: torch.nn.Module,
     train_data: Dict[str, Dict],
-    val_data: Dict[str, DomainNetDataset],
+    val_data: Dict[str, Dataset],
     logger,
     exp_dir: str
 ) -> Dict:
@@ -126,8 +127,8 @@ def run_baseline_training(
             for client_id in participating_clients[domain]:
                 # Get client's dataset
                 client_data = train_data[domain]['clients'][client_id]
-                client_dataset = DomainNetDataset(
-                    root=config['data']['root'],
+                client_dataset = create_dataset(
+                    config=config,
                     indices=client_data['local'],
                     train=True
                 )
@@ -164,8 +165,8 @@ def run_baseline_training(
                 if not dc_pool:
                     continue
 
-                dc_dataset = DomainNetDataset(
-                    root=config['data']['root'],
+                dc_dataset = create_dataset(
+                    config=config,
                     indices=dc_pool,
                     train=True
                 )

@@ -13,9 +13,9 @@ import random
 from typing import Dict, List, Optional
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Dataset
 
-from data.domainnet import DomainNetDataset
+from data.factory import create_dataset
 from core.aggregator import (
     aggregate_theta,
     aggregate_phi_domain,
@@ -131,6 +131,9 @@ class LocalTrainer:
         correct = 0
         total = 0
 
+        # Track iteration for scheduler
+        iteration = 0
+
         # Local training
         for step in range(local_steps):
             for batch_idx, (images, labels, domains) in enumerate(dataloader):
@@ -154,15 +157,18 @@ class LocalTrainer:
                 scaler.step(optimizer_phi)
                 scaler.update()
 
-                # Update schedulers
-                if self.cosine_lr:
-                    scheduler_theta.step()
-                    scheduler_phi.step()
-
                 # Track metrics
                 _, predicted = outputs.max(1)
                 correct += predicted.eq(labels).sum().item()
                 total += labels.size(0)
+
+                iteration += 1
+
+        # Update schedulers AFTER all training steps (per-client)
+        if self.cosine_lr and scheduler_theta is not None and iteration > 0:
+            for _ in range(iteration):
+                scheduler_theta.step()
+                scheduler_phi.step()
 
         # Calculate accuracy
         train_acc = 100.0 * correct / total if total > 0 else 0.0
@@ -269,7 +275,7 @@ def run_training(
     config: Dict,
     model: nn.Module,
     train_data: Dict[str, Dict],
-    val_data: Dict[str, DomainNetDataset],
+    val_data: Dict[str, Dataset],
     edge_manager: EdgeManager,
     selector: FAPSelector,
     trainer: LocalTrainer,
@@ -378,8 +384,8 @@ def run_training(
 
                 # Get client's dataset
                 client_data = train_data[domain]['clients'][client_id]
-                client_dataset = DomainNetDataset(
-                    root=config['data']['root'],
+                client_dataset = create_dataset(
+                    config=config,
                     indices=client_data['local'],
                     train=True
                 )
@@ -404,7 +410,7 @@ def run_training(
                 domain_phi_updates[domain].append(phi_state)
                 domain_phi_weights[domain].append(len(client_dataset))
 
-                logger.info(f"  Client {client_id}: train_acc={train_acc:.2f}%")
+                # logger.info(f"  Client {client_id}: train_acc={train_acc:.2f}%")
 
         # Phase 3: Domain-Internal Phi Aggregation
         for domain in domains:

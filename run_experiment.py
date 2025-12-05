@@ -17,8 +17,7 @@ import torch
 import yaml
 
 from models.resnet50_domainheads import ResNet50_DomainHeads, ResNet18_DomainHeads
-from data.domainnet import DomainNetDataset
-from data.partition import build_domain_clients
+from data.factory import prepare_federated_data
 from core.loop import LocalTrainer, run_training
 from core.edge_manager import EdgeManager
 from core.selector import FAPSelector
@@ -83,49 +82,7 @@ def prepare_data(config: Dict) -> tuple:
     Returns:
         Tuple of (train_data, val_data)
     """
-    # Load dataset index
-    index_path = os.path.join(config['data']['root'], 'index.json')
-
-    # Create dummy index if it doesn't exist (for testing)
-    if not os.path.exists(index_path):
-        print(f"Warning: index.json not found at {index_path}")
-        print("Creating dummy index for testing...")
-        dummy_dataset = DomainNetDataset(config['data']['root'])
-
-    with open(index_path, 'r') as f:
-        index = json.load(f)
-
-    # Prepare data for each domain
-    train_data = {}
-    val_data = {}
-
-    for domain_idx, domain in enumerate(config['data']['domains']):
-        # Build client partitions for this domain
-        domain_data = build_domain_clients(
-            index=index,
-            domain=domain,
-            num_clients=config['partition']['num_clients_per_domain'],
-            alpha=config['partition']['alpha'],
-            unload_ratio=config['partition']['unload_ratio'],
-            val_ratio=config['partition']['val_ratio'],
-            seed=config['partition']['seed'] + domain_idx
-        )
-
-        train_data[domain] = domain_data
-
-        # Create validation dataset for the domain
-        # Aggregate all validation indices from clients
-        val_indices = []
-        for client_data in domain_data['clients'].values():
-            val_indices.extend(client_data['val'])
-
-        val_data[domain] = DomainNetDataset(
-            root=config['data']['root'],
-            indices=val_indices,
-            train=False
-        )
-
-    return train_data, val_data
+    return prepare_federated_data(config)
 
 
 def main():

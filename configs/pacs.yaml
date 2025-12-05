@@ -1,0 +1,91 @@
+# PACS Dataset Configuration
+# ResNet18 + Low-rank adapters for federated domain generalization
+# Expected training time: ~1-2 hours on single 4090
+
+# Dataset
+data:
+  dataset: "pacs"  # Use PACS dataset
+  root: null  # Use HuggingFace cache (auto-download)
+  domains: ["photo", "art_painting", "cartoon", "sketch"]
+  num_classes: 7
+  img_size: 224  # Standard ImageNet size
+
+# Client partitioning
+partition:
+  num_clients_per_domain: 10  # 4 domains × 10 clients = 40 total
+  alpha: 0.5  # Dirichlet concentration (moderate heterogeneity)
+  unload_ratio: 0.0  # No data offloading for PACS
+  val_ratio: 0.1  # 10% for validation
+  seed: 42
+
+# Model architecture
+model:
+  backbone: "resnet18"  # ResNet-18 (standard for PACS)
+  pretrained: true  # ImageNet pretrained
+  adapter_rank: 4  # Low-rank adapter dimension
+
+# Training
+training:
+  total_rounds: 100  # Total federated rounds
+  local_steps: 3  # Local training steps per client
+  batch_size: 32  # Batch size per client
+  clients_participation: 0.2  # 20% clients per round (8 clients)
+
+  # Learning rates
+  lr_theta: 0.001  # Backbone learning rate
+  lr_phi: 0.01  # Domain adapter learning rate
+  weight_decay: 0.0001
+  momentum: 0.9
+  cosine_lr: true  # Cosine annealing
+
+  # AMP for faster training
+  use_amp: true
+
+# FAP Selector (fair aggregation)
+selector:
+  K: 5  # Fair-weight every K rounds
+  w1: 0.5  # Weight for loss (moderate)
+  w2: 0.1  # Weight for drift (low, gentle fairness)
+  tau: 2.0  # Softmax temperature (smoother)
+
+# Fair-Weighted Aggregation
+fair_weighting:
+  enable: true
+
+# Edge Manager
+edge_manager:
+  ema_beta: 0.9
+  proj_dim: 64
+
+# Data augmentation (light for PACS)
+augmentation:
+  train:
+    resize: 256
+    crop_size: 224
+    horizontal_flip: 0.5
+    color_jitter:
+      brightness: 0.2
+      contrast: 0.2
+      saturation: 0.2
+      hue: 0.05
+  test:
+    resize: 256
+    crop_size: 224
+
+# Logging and checkpointing
+logging:
+  log_interval: 1
+  checkpoint_interval: 20
+  output_dir: "./outputs"
+  exp_name: "pacs_lora"
+  use_timestamp_dir: true
+  save_config: true
+  save_experiment_info: true
+
+# System
+system:
+  device: "cuda"
+  seed: 42
+  num_workers: 4
+  pin_memory: true
+  cudnn_benchmark: true

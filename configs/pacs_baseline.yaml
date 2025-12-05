@@ -1,0 +1,87 @@
+# PACS Baseline Configuration
+# Pure FedAvg with ResNet18 (no adapters, no fairness)
+# For establishing performance baseline
+
+# Dataset
+data:
+  dataset: "pacs"
+  root: null
+  domains: ["photo", "art_painting", "cartoon", "sketch"]
+  num_classes: 7
+  img_size: 224
+
+# Client partitioning
+partition:
+  num_clients_per_domain: 10
+  alpha: 0.5
+  unload_ratio: 0.0
+  val_ratio: 0.1
+  seed: 42
+
+# Model architecture (baseline: no adapters)
+model:
+  backbone: "resnet18"
+  pretrained: true
+  adapter_rank: 0  # No adapters for baseline
+
+# Training
+training:
+  total_rounds: 100
+  local_steps: 3
+  batch_size: 32
+  clients_participation: 0.2
+
+  lr_theta: 0.001
+  lr_phi: 0.0  # No phi for baseline
+  weight_decay: 0.0001
+  momentum: 0.9
+  cosine_lr: true
+  use_amp: true
+
+# Disable FAP for baseline
+selector:
+  K: 0  # Disabled
+  w1: 0.0
+  w2: 0.0
+  tau: 1.0
+
+fair_weighting:
+  enable: false
+
+# Edge Manager
+edge_manager:
+  ema_beta: 0.9
+  proj_dim: 64
+
+# Data augmentation
+augmentation:
+  train:
+    resize: 256
+    crop_size: 224
+    horizontal_flip: 0.5
+    color_jitter:
+      brightness: 0.2
+      contrast: 0.2
+      saturation: 0.2
+      hue: 0.05
+  test:
+    resize: 256
+    crop_size: 224
+
+# Logging
+logging:
+  log_interval: 1
+  checkpoint_interval: 20
+  output_dir: "./outputs"
+  exp_name: "pacs_baseline"
+  use_timestamp_dir: true
+  save_config: true
+  save_experiment_info: true
+
+# System
+system:
+  device: "cuda"
+  seed: 42
+  num_workers: 4
+  pin_memory: true
+  cudnn_benchmark: true

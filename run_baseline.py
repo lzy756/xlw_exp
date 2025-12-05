@@ -18,8 +18,7 @@ import yaml
 from baseline.models.resnet18_single import ResNet18Single
 from baseline.models.resnet50_single import ResNet50Single
 from baseline.core.loop_baseline import run_baseline_training
-from data.domainnet import DomainNetDataset
-from data.partition import build_domain_clients
+from data.factory import prepare_federated_data, get_dataset_info
 from utils.common import set_seed, build_logger
 from utils.experiment import ExperimentLogger
 
@@ -45,41 +44,8 @@ def create_model(config: Dict):
 
 
 def prepare_data(config: Dict):
-    """Prepare train/val splits per domain using existing partition logic."""
-    index_path = os.path.join(config['data']['root'], 'index.json')
-    if not os.path.exists(index_path):
-        # Build dummy index to keep flow consistent in testing
-        _ = DomainNetDataset(config['data']['root'])
-
-    with open(index_path, 'r') as f:
-        index = json.load(f)
-
-    train_data = {}
-    val_data = {}
-
-    for domain_idx, domain in enumerate(config['data']['domains']):
-        domain_data = build_domain_clients(
-            index=index,
-            domain=domain,
-            num_clients=config['partition']['num_clients_per_domain'],
-            alpha=config['partition']['alpha'],
-            unload_ratio=config['partition']['unload_ratio'],
-            val_ratio=config['partition']['val_ratio'],
-            seed=config['partition']['seed'] + domain_idx
-        )
-        train_data[domain] = domain_data
-
-        val_indices = []
-        for client_data in domain_data['clients'].values():
-            val_indices.extend(client_data['val'])
-
-        val_data[domain] = DomainNetDataset(
-            root=config['data']['root'],
-            indices=val_indices,
-            train=False
-        )
-
-    return train_data, val_data
+    """Prepare train/val splits per domain using dataset factory."""
+    return prepare_federated_data(config)
 
 
 def main():
