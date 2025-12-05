@@ -14,16 +14,16 @@ data:
 # Client partitioning
 partition:
   num_clients_per_domain: 10  # 4 domains × 10 clients = 40 total
-  alpha: 0.5  # Dirichlet concentration (moderate heterogeneity)
+  alpha: 0.1  # Dirichlet concentration (moderate heterogeneity)
   unload_ratio: 0.0  # No data offloading for PACS
   val_ratio: 0.1  # 10% for validation
   seed: 42
 
-# Model architecture (CNN5 with feature adapters)
+# Model architecture (CNN5 with LoRA classifier)
 model:
   backbone: "cnn5"
   pretrained: false  # CNN5 trains from scratch
-  adapter_rank: 16  # Feature-level adapter rank (larger for feature adaptation)
+  adapter_rank: 8  # LoRA rank for classifier adaptation
 
 # Training
 training:

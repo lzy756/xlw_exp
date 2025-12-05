@@ -425,8 +425,8 @@ def run_training(
 
         # Phase 4: Global θ Aggregation (EVERY ROUND! Key v2 change)
         if all_theta_updates:
-            # Check if this is a fair-weighting round
-            use_fair_weighting = (round_num % K == 0) and fair_weighting_enabled
+            # Check if this is a fair-weighting round (K=0 means disabled)
+            use_fair_weighting = (K > 0 and round_num % K == 0) and fair_weighting_enabled
             
             if use_fair_weighting:
                 logger.info(f"Round {round_num}: Applying fair-weighted aggregation")
