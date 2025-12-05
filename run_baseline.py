@@ -17,6 +17,7 @@ import yaml
 
 from baseline.models.resnet18_single import ResNet18Single
 from baseline.models.resnet50_single import ResNet50Single
+from baseline.models.cnn5_single import CNN5Single
 from baseline.core.loop_baseline import run_baseline_training
 from data.factory import prepare_federated_data, get_dataset_info
 from utils.common import set_seed, build_logger
@@ -39,6 +40,8 @@ def create_model(config: Dict):
         return ResNet18Single(num_classes=num_classes, pretrained=pretrained)
     elif backbone in ('resnet50', 'resnet50_single'):
         return ResNet50Single(num_classes=num_classes, pretrained=pretrained)
+    elif backbone in ('cnn5', 'cnn5_single'):
+        return CNN5Single(num_classes=num_classes, pretrained=pretrained)
     else:
         raise ValueError(f"Unsupported backbone: {backbone}")
 

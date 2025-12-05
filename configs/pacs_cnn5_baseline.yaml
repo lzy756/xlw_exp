@@ -1,6 +1,6 @@
-# PACS Baseline Configuration
-# Pure FedAvg with ResNet18 (no adapters, no fairness)
-# For establishing performance baseline
+# PACS Baseline Configuration with CNN5
+# Pure FedAvg with 5-layer CNN (no pretrained weights)
+# For demonstrating FL performance under domain shift without pretrained features
 
 # Dataset
 data:
@@ -18,10 +18,10 @@ partition:
   val_ratio: 0.1
   seed: 42
 
-# Model architecture (baseline: no adapters)
+# Model architecture (CNN5: no pretrained weights)
 model:
-  backbone: "resnet18"
-  pretrained: true
+  backbone: "cnn5"
+  pretrained: false  # CNN5 trains from scratch
   adapter_rank: 0  # No adapters for baseline
 
 # Training
@@ -31,7 +31,7 @@ training:
   batch_size: 32
   clients_participation: 0.2
 
-  lr_theta: 0.001
+  lr_theta: 0.01  # Higher LR for training from scratch
   lr_phi: 0.0  # No phi for baseline
   weight_decay: 0.0001
   momentum: 0.9
@@ -73,7 +73,7 @@ logging:
   log_interval: 1
   checkpoint_interval: 20
   output_dir: "./outputs"
-  exp_name: "pacs_baseline"
+  exp_name: "pacs_cnn5_baseline"
   use_timestamp_dir: true
   save_config: true
   save_experiment_info: true

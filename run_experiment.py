@@ -17,6 +17,7 @@ import torch
 import yaml
 
 from models.resnet50_domainheads import ResNet50_DomainHeads, ResNet18_DomainHeads
+from models.cnn5_domainheads import CNN5_DomainHeads
 from data.factory import prepare_federated_data
 from core.loop import LocalTrainer, run_training
 from core.edge_manager import EdgeManager
@@ -67,9 +68,16 @@ def create_model(config: Dict):
             pretrained=config['model']['pretrained'],
             adapter_rank=config['model'].get('adapter_rank', 4)
         )
+    elif backbone == 'cnn5':
+        return CNN5_DomainHeads(
+            num_classes=config['data']['num_classes'],
+            domains=config['data']['domains'],
+            pretrained=config['model'].get('pretrained', False),
+            adapter_rank=config['model'].get('adapter_rank', 4)
+        )
     else:
         raise ValueError(
-            f"Unsupported backbone: {backbone}. Choose 'resnet18' or 'resnet50'."
+            f"Unsupported backbone: {backbone}. Choose 'resnet18', 'resnet50', or 'cnn5'."
         )
 
 
