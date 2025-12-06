@@ -1,11 +1,9 @@
-"""V2 federated learning training loop.
+"""FedRep-style training loop with LoRA personalization.
 
-Key differences from v1:
-1. θ (backbone) aggregated every round (not just every K rounds)
-2. No LoRA - φ is only domain heads
-3. No calibration step (disabled in Phase 1)
-4. No DC training (disabled in Phase 1)
-5. Optional fair-weighting every K rounds
+Simplified main method: global backbone (θ) is aggregated every round via
+FedAvg, while domain-specific LoRA adapters (φ) stay local (aggregated only
+within domain if multiple clients are sampled). Fair-weighting/DC/other
+mix-ins are removed to keep the method focused and stable.
 """
 
 import os
@@ -18,8 +16,7 @@ from torch.utils.data import DataLoader, Dataset
 from data.factory import create_dataset
 from core.aggregator import (
     aggregate_theta,
-    aggregate_phi_domain,
-    fair_weighted_aggregate
+    aggregate_phi_domain
 )
 from core.edge_manager import EdgeManager
 from core.selector import FAPSelector
@@ -28,7 +25,7 @@ from utils.common import get_git_commit_hash
 
 
 class LocalTrainer:
-    """Simplified local trainer for v2 models (no LoRA)."""
+    """Local trainer implementing FedRep-style alternating updates."""
 
     def __init__(
         self,
@@ -176,6 +173,15 @@ class LocalTrainer:
                 # Backward pass
                 scaler.scale(loss).backward()
 
+                # Gradient clipping to prevent explosion
+                max_norm = 5.0
+                if train_theta:
+                    scaler.unscale_(optimizer_theta)
+                    torch.nn.utils.clip_grad_norm_(theta_params, max_norm)
+                if train_phi:
+                    scaler.unscale_(optimizer_phi)
+                    torch.nn.utils.clip_grad_norm_(phi_params, max_norm)
+
                 # Update parameters based on training phase
                 if train_theta:
                     scaler.step(optimizer_theta)
@@ -300,10 +306,10 @@ def run_training(
 ) -> Dict:
     """Run v2 federated learning training loop.
     
-    Key changes from v1:
-    1. θ aggregated every round (not just every K rounds)
-    2. Optional fair-weighting every K rounds
-    3. No calibration or DC training (Phase 1)
+    FedRep simplification:
+    1. θ aggregated every round (FedAvg)
+    2. φ = domain LoRA kept local (optionally averaged within domain)
+    3. Fair-weighting/DC/calibration removed
 
     Args:
         config: Configuration dictionary
@@ -324,15 +330,11 @@ def run_training(
     local_steps = config['training']['local_steps']
     batch_size = config['training']['batch_size']
     clients_participation = config['training']['clients_participation']
-    K = config['selector']['K']
     checkpoint_interval = config['logging']['checkpoint_interval']
     domains = config['data']['domains']
-    
-    # Fair-weighting settings
-    fair_weighting_enabled = config.get('fair_weighting', {}).get('enable', False)
-    
-    # Decoupled training settings (FedRep style)
-    decoupled_training = config['training'].get('decoupled_training', False)
+
+    # FedRep decoupled training settings
+    decoupled_training = config['training'].get('decoupled_training', True)
     phi_steps_ratio = config['training'].get('phi_steps_ratio', 0.6)
     
     # Use the provided experiment directory
@@ -347,12 +349,10 @@ def run_training(
         'worst_acc': [],
         'variance': [],
         'per_domain_acc': {d: [] for d in domains},
-        'fair_factors': [],  # Fairness factors (q)
     }
 
     logger.info(f"Starting v2 federated learning training for {total_rounds} rounds")
-    logger.info(f"Configuration: K={K}, participation={clients_participation}")
-    logger.info(f"Fair-weighting: {'enabled' if fair_weighting_enabled else 'disabled'}")
+    logger.info(f"Configuration: participation={clients_participation}")
     logger.info(f"Git commit: {get_git_commit_hash()}")
 
     # Main training loop
@@ -430,7 +430,7 @@ def run_training(
 
                 # logger.info(f"  Client {client_id}: train_acc={train_acc:.2f}%")
 
-        # Phase 3: Domain-Internal Phi Aggregation
+        # Phase 3: Domain-Internal Phi Aggregation (LoRA only)
         for domain in domains:
             if domain_phi_updates[domain]:
                 aggregated_phi = aggregate_phi_domain(
@@ -441,42 +441,12 @@ def run_training(
                 edge_manager.set_phi(domain, aggregated_phi)
                 logger.info(f"Aggregated phi for domain {domain}")
 
-        # Phase 4: Global θ Aggregation (EVERY ROUND! Key v2 change)
+        # Phase 4: Global θ Aggregation (FedAvg)
         if all_theta_updates:
-            # Check if this is a fair-weighting round (K=0 means disabled)
-            use_fair_weighting = (K > 0 and round_num % K == 0) and fair_weighting_enabled
-            
-            if use_fair_weighting:
-                logger.info(f"Round {round_num}: Applying fair-weighted aggregation")
-                
-                # Get metrics for fair factors
-                L_map = {d: edge_manager.L_ema[d].get() or 0.0 for d in domains}
-                drift_map = edge_manager.get_drift_scores()
-                
-                logger.info(f"Domain EMA losses (L_e): {L_map}")
-                logger.info(f"Domain drift scores (Δ_e): {drift_map}")
-                
-                # Compute fair factors
-                fair_factors = selector.compute_fair_factors(L_map, drift_map)
-                logger.info(f"Fair factors: {fair_factors}")
-                
-                # Fair-weighted aggregation
-                theta_global = fair_weighted_aggregate(
-                    domain_theta_updates=domain_theta_updates,
-                    domain_theta_weights=domain_theta_weights,
-                    domains=domains,
-                    fair_factors=fair_factors
-                )
-                
-                metrics_history['fair_factors'].append(fair_factors)
-            else:
-                # Standard FedAvg aggregation
-                theta_global = aggregate_theta(
-                    client_theta_list=all_theta_updates,
-                    client_weights=all_theta_weights
-                )
-                
-                metrics_history['fair_factors'].append(None)
+            theta_global = aggregate_theta(
+                client_theta_list=all_theta_updates,
+                client_weights=all_theta_weights
+            )
             
             logger.info(f"Global theta aggregated (round {round_num})")
 

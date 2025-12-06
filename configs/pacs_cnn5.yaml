@@ -34,14 +34,14 @@ training:
 
   # Learning rates (higher for training from scratch)
   lr_theta: 0.001  # Lower lr to prevent loss explosion
-  lr_phi: 0.002  # Slightly higher for head+LoRA local loop
+  lr_phi: 0.001  # Lower LR for head+LoRA to reduce drift
   weight_decay: 0.0001
   momentum: 0.9
   cosine_lr: true  # Cosine annealing for smoother convergence
 
   # FedRep-style decoupled training
   decoupled_training: true  # Enable alternating phi/theta training
-  phi_steps_ratio: 0.5  # 50% steps for phi (head+LoRA), 50% for theta
+  phi_steps_ratio: 0.4  # 40% phi, 60% theta for stability
 
   # AMP for faster training
   use_amp: true

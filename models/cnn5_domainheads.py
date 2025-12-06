@@ -247,27 +247,14 @@ class CNN5_DomainHeads(nn.Module):
         return self.classifier(features, domain)
 
     def parameters_theta(self) -> List[nn.Parameter]:
-        """Get globally aggregated parameters (θ) with FedBN strategy.
+        """Get globally aggregated parameters (θ).
 
-        Returns backbone conv weights + base classifier weights (W_0, bias).
-        Excludes:
-        - LoRA matrices (A, B) - domain-specific
-        - BatchNorm parameters - local statistics (FedBN)
-
-        Returns:
-            List of parameters for global aggregation
+        All backbone + classifier base weights/bias are aggregated.
+        Only LoRA matrices (domain-specific) are excluded.
         """
         params = []
         for name, param in self.named_parameters():
-            # Exclude LoRA matrices (domain-specific)
             if 'lora_A' in name or 'lora_B' in name:
-                continue
-            # Exclude classifier base weights/bias (kept local per FedRep head)
-            if name.startswith('classifier.weight') or name.startswith('classifier.bias'):
-                continue
-            # Exclude BatchNorm parameters (FedBN strategy)
-            # In Sequential blocks, index 1 is BatchNorm2d
-            if '.1.weight' in name or '.1.bias' in name or '.1.running' in name:
                 continue
             params.append(param)
         return params
@@ -286,39 +273,18 @@ class CNN5_DomainHeads(nn.Module):
         return params
 
     def parameters_phi(self, domain: str) -> List[nn.Parameter]:
-        """Get domain-specific parameters (φ_e).
-
-        Returns LoRA matrices (A, B) and classifier base weights/bias
-        for the specified domain (FedRep-style head local loop).
-
-        Args:
-            domain: Domain name
-
-        Returns:
-            List of LoRA parameters for the domain
-        """
+        """Get domain-specific LoRA parameters (φ_e)."""
         return [
-            self.classifier.weight,
-            self.classifier.bias,
             self.classifier.lora_A[domain],
             self.classifier.lora_B[domain]
         ]
 
     def state_dict_theta(self) -> Dict[str, torch.Tensor]:
-        """Export globally aggregated state dict with FedBN.
-
-        Returns:
-            State dict containing backbone conv + base classifier weights.
-            Excludes LoRA and BatchNorm parameters.
-        """
+        """Export globally aggregated state dict (excludes only LoRA)."""
         return {
             k: v.cpu().clone()
             for k, v in self.state_dict().items()
             if 'lora_A' not in k and 'lora_B' not in k
-            and not k.startswith('classifier.weight')
-            and not k.startswith('classifier.bias')
-            and '.1.weight' not in k and '.1.bias' not in k
-            and '.1.running' not in k and '.1.num_batches' not in k
         }
 
     def state_dict_bn(self) -> Dict[str, torch.Tensor]:
@@ -335,17 +301,9 @@ class CNN5_DomainHeads(nn.Module):
         }
 
     def state_dict_phi(self, domain: str) -> Dict[str, torch.Tensor]:
-        """Export domain-specific state dict.
-
-        Args:
-            domain: Domain name
-
-        Returns:
-            State dict containing LoRA matrices for the specified domain
-        """
+        """Export domain-specific LoRA state dict."""
         return {
             k: v.cpu().clone()
             for k, v in self.state_dict().items()
-            if k.startswith('classifier.weight') or k.startswith('classifier.bias')
-            or f'lora_A.{domain}' in k or f'lora_B.{domain}' in k
+            if f'lora_A.{domain}' in k or f'lora_B.{domain}' in k
         }

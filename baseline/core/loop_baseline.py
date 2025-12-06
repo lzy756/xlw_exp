@@ -14,6 +14,7 @@ from torch.utils.data import Dataset
 from data.factory import create_dataset
 from baseline.core.trainer_fedavg import LocalTrainerFedAvg
 from baseline.core.trainer_fedprox import LocalTrainerFedProx
+from baseline.core.trainer_fedbn import LocalTrainerFedBN
 from baseline.core.selector_fixed import FixedSelector
 from core.aggregator import fedavg
 from utils.metrics import per_domain_metrics
@@ -70,6 +71,14 @@ def run_baseline_training(
             mu=mu
         )
         logger.info(f"Using FedProx with μ={mu}")
+    elif algo == 'fedbn':
+        trainer = LocalTrainerFedBN(
+            model=model,
+            device=device,
+            lr=lr,
+            weight_decay=weight_decay
+        )
+        logger.info("Using FedBN (BN kept local)")
     else:
         trainer = LocalTrainerFedAvg(
             model=model,
@@ -79,8 +88,8 @@ def run_baseline_training(
         )
         logger.info("Using FedAvg")
 
-    # Initialize global model state
-    w_global = model.state_dict_global()
+    # Initialize global model state (FedBN uses non-BN params only)
+    w_global = model.state_dict_fedbn() if algo == 'fedbn' else model.state_dict_global()
 
     # Track metrics
     domains = config['data']['domains']
@@ -148,6 +157,12 @@ def run_baseline_training(
                         local_steps=local_steps,
                         w_global_snapshot=w_global
                     )
+                elif algo == 'fedbn':
+                    state_dict, num_samples = trainer.train_client(
+                        dataset=client_dataset,
+                        batch_size=batch_size,
+                        local_steps=local_steps
+                    )
                 else:
                     state_dict, num_samples = trainer.train_client(
                         dataset=client_dataset,
@@ -184,6 +199,12 @@ def run_baseline_training(
                         batch_size=batch_size,
                         local_steps=local_steps,
                         w_global_snapshot=w_global
+                    )
+                elif algo == 'fedbn':
+                    state_dict, num_samples = trainer.train_client(
+                        dataset=dc_dataset,
+                        batch_size=batch_size,
+                        local_steps=local_steps
                     )
                 else:
                     state_dict, num_samples = trainer.train_client(

@@ -112,6 +112,16 @@ class ResNet18Single(nn.Module):
         """
         return {k: v.cpu().clone() for k, v in self.state_dict().items()}
 
+    # --- FedBN helpers (non-default) ---
+    def state_dict_fedbn(self) -> Dict[str, torch.Tensor]:
+        """Export non-BN parameters for FedBN aggregation."""
+        out: Dict[str, torch.Tensor] = {}
+        for k, v in self.state_dict().items():
+            if 'bn' in k and ('.weight' in k or '.bias' in k or 'running_' in k or 'num_batches_tracked' in k):
+                continue
+            out[k] = v.cpu().clone()
+        return out
+
     def load_state_dict_global(self, state_dict: Dict[str, torch.Tensor]) -> None:
         """Load all model parameters.
 
@@ -119,6 +129,13 @@ class ResNet18Single(nn.Module):
             state_dict: State dictionary to load
         """
         self.load_state_dict(state_dict, strict=True)
+
+    def load_state_dict_fedbn(self, state_dict: Dict[str, torch.Tensor]) -> None:
+        """Load only provided (non-BN) parameters, keep BN local (FedBN)."""
+        own = self.state_dict()
+        for k, v in state_dict.items():
+            if k in own:
+                own[k].copy_(v)
 
     def parameters_all(self) -> List[nn.Parameter]:
         """Get all trainable parameters.

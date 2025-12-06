@@ -52,7 +52,7 @@ def prepare_data(config: Dict):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Baseline FL (FedAvg/FedProx)")
+    parser = argparse.ArgumentParser(description="Baseline FL (FedAvg/FedProx/FedBN)")
     parser.add_argument('--config', type=str, default='configs/default.yaml', help='Path to config file')
     parser.add_argument('--domains', type=str, nargs='+', help='Override domains')
     parser.add_argument('--rounds', type=int, help='Override total rounds')
@@ -60,7 +60,7 @@ def main():
     parser.add_argument('--exp-tag', type=str, dest='exp_tag', help='Experiment tag/name')
     parser.add_argument('--output-dir', type=str, dest='output_dir', help='Override output directory')
     parser.add_argument('--no-timestamp', action='store_true', dest='no_timestamp', help='Disable timestamp dir')
-    parser.add_argument('--algo', type=str, choices=['fedavg', 'fedprox'], help='Override algorithm')
+    parser.add_argument('--algo', type=str, choices=['fedavg', 'fedprox', 'fedbn'], help='Override algorithm')
     parser.add_argument('--mu', type=float, help='Override FedProx mu')
     parser.add_argument('--fixed-domain', type=str, dest='fixed_domain', help='Override fixed aggregator domain')
     parser.add_argument('--lr', type=float, help='Override learning rate for baseline')
