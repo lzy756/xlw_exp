@@ -97,18 +97,8 @@ def aggregate_phi_domain(
     Returns:
         Aggregated phi state dictionary for the domain
     """
-    # Filter to ensure we only aggregate phi parameters for this domain
-    filtered_phi_list = []
-    for phi_state in client_phi_list:
-        filtered = {
-            k: v for k, v in phi_state.items()
-            if k == f'biases.{domain}'
-            or k.startswith(f'adapters_down.{domain}')
-            or k.startswith(f'adapters_up.{domain}')
-        }
-        filtered_phi_list.append(filtered)
-
-    return fedavg(filtered_phi_list, client_weights)
+    # client_phi_list 已按域分桶，这里直接聚合所有提供的键（包含 classifier + LoRA）
+    return fedavg(client_phi_list, client_weights)
 
 
 def fair_weighted_aggregate(

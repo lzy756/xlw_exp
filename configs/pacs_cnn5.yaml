@@ -28,16 +28,20 @@ model:
 # Training
 training:
   total_rounds: 100  # More rounds for training from scratch
-  local_steps: 5  # More local steps for personalization
+  local_steps: 5  # Reduce local steps to stabilize updates
   batch_size: 32  # Batch size per client
   clients_participation: 0.2  # 20% clients per round (8 clients)
 
   # Learning rates (higher for training from scratch)
-  lr_theta: 0.01  # Backbone learning rate
-  lr_phi: 0.01  # Adapter learning rate (same scale since both train from scratch)
+  lr_theta: 0.001  # Lower lr to prevent loss explosion
+  lr_phi: 0.002  # Slightly higher for head+LoRA local loop
   weight_decay: 0.0001
   momentum: 0.9
   cosine_lr: true  # Cosine annealing for smoother convergence
+
+  # FedRep-style decoupled training
+  decoupled_training: true  # Enable alternating phi/theta training
+  phi_steps_ratio: 0.5  # 50% steps for phi (head+LoRA), 50% for theta
 
   # AMP for faster training
   use_amp: true

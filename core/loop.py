@@ -68,16 +68,20 @@ class LocalTrainer:
         dataset,
         batch_size: int = 32,
         local_steps: int = 5,
-        lr_phi: Optional[float] = None
+        lr_phi: Optional[float] = None,
+        decoupled_training: bool = True,
+        phi_steps_ratio: float = 0.6
     ):
-        """Train model on client's local data.
+        """Train model on client's local data with FedRep-style decoupled training.
 
         Args:
             domain: Domain name for this client
             dataset: Client's local dataset
             batch_size: Batch size for training
-            local_steps: Number of local training steps
+            local_steps: Number of local training steps (epochs)
             lr_phi: Optional override for phi learning rate
+            decoupled_training: Whether to use FedRep-style alternating training
+            phi_steps_ratio: Ratio of steps for phi training (default 0.6 = 60%)
 
         Returns:
             Tuple of (theta_state_dict, phi_state_dict, train_accuracy)
@@ -134,8 +138,28 @@ class LocalTrainer:
         # Track iteration for scheduler
         iteration = 0
 
-        # Local training
+        # Calculate split point for decoupled training
+        # FedRep style: first train phi (head), then train theta (body)
+        phi_steps = int(local_steps * phi_steps_ratio) if decoupled_training else 0
+        theta_steps = local_steps - phi_steps if decoupled_training else local_steps
+
+        # Local training with decoupled phases
         for step in range(local_steps):
+            # Determine training phase
+            if decoupled_training:
+                if step < phi_steps:
+                    # Phase A: Train phi (LoRA), freeze theta
+                    train_theta = False
+                    train_phi = True
+                else:
+                    # Phase B: Train theta (backbone), freeze phi
+                    train_theta = True
+                    train_phi = False
+            else:
+                # Joint training (original behavior)
+                train_theta = True
+                train_phi = True
+
             for batch_idx, (images, labels, domains) in enumerate(dataloader):
                 images = images.to(self.device)
                 labels = labels.to(self.device)
@@ -152,10 +176,19 @@ class LocalTrainer:
                 # Backward pass
                 scaler.scale(loss).backward()
 
-                # Update parameters
-                scaler.step(optimizer_theta)
-                scaler.step(optimizer_phi)
+                # Update parameters based on training phase
+                if train_theta:
+                    scaler.step(optimizer_theta)
+                if train_phi:
+                    scaler.step(optimizer_phi)
                 scaler.update()
+
+                # Update schedulers after optimizer step
+                if self.cosine_lr:
+                    if train_theta and scheduler_theta is not None:
+                        scheduler_theta.step()
+                    if train_phi and scheduler_phi is not None:
+                        scheduler_phi.step()
 
                 # Track metrics
                 _, predicted = outputs.max(1)
@@ -164,29 +197,12 @@ class LocalTrainer:
 
                 iteration += 1
 
-        # Update schedulers AFTER all training steps (per-client)
-        if self.cosine_lr and scheduler_theta is not None and iteration > 0:
-            for _ in range(iteration):
-                scheduler_theta.step()
-                scheduler_phi.step()
-
         # Calculate accuracy
         train_acc = 100.0 * correct / total if total > 0 else 0.0
 
-        # Extract state dictionaries (v2: no lora_blocks)
-        theta_state = {
-            k: v.cpu().clone()
-            for k, v in self.model.state_dict().items()
-            if not k.startswith('biases.') and not k.startswith('adapters_')
-        }
-
-        phi_state = {
-            k: v.cpu().clone()
-            for k, v in self.model.state_dict().items()
-            if k == f'biases.{domain}'
-            or k.startswith(f'adapters_down.{domain}')
-            or k.startswith(f'adapters_up.{domain}')
-        }
+        # Extract state dictionaries using model's methods
+        theta_state = self.model.state_dict_theta()
+        phi_state = self.model.state_dict_phi(domain)
 
         return theta_state, phi_state, train_acc
 
@@ -315,15 +331,15 @@ def run_training(
     # Fair-weighting settings
     fair_weighting_enabled = config.get('fair_weighting', {}).get('enable', False)
     
+    # Decoupled training settings (FedRep style)
+    decoupled_training = config['training'].get('decoupled_training', False)
+    phi_steps_ratio = config['training'].get('phi_steps_ratio', 0.6)
+    
     # Use the provided experiment directory
     output_dir = exp_dir
 
-    # Initialize global theta (backbone parameters, no LoRA)
-    theta_global = {
-        k: v.cpu().clone()
-        for k, v in model.state_dict().items()
-        if not k.startswith('biases.')
-    }
+    # Initialize global theta using model-provided filter (excludes head/BN/LoRA)
+    theta_global = model.state_dict_theta()
 
     # Track metrics
     metrics_history = {
@@ -394,12 +410,14 @@ def run_training(
                     logger.warning(f"Client {client_id} in {domain} has no data, skipping")
                     continue
 
-                # Local training
+                # Local training with decoupled phases
                 theta_state, phi_state, train_acc = trainer.train_client(
                     domain=domain,
                     dataset=client_dataset,
                     batch_size=batch_size,
-                    local_steps=local_steps
+                    local_steps=local_steps,
+                    decoupled_training=decoupled_training,
+                    phi_steps_ratio=phi_steps_ratio
                 )
 
                 # Collect updates (both flat and per-domain)

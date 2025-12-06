@@ -262,6 +262,9 @@ class CNN5_DomainHeads(nn.Module):
             # Exclude LoRA matrices (domain-specific)
             if 'lora_A' in name or 'lora_B' in name:
                 continue
+            # Exclude classifier base weights/bias (kept local per FedRep head)
+            if name.startswith('classifier.weight') or name.startswith('classifier.bias'):
+                continue
             # Exclude BatchNorm parameters (FedBN strategy)
             # In Sequential blocks, index 1 is BatchNorm2d
             if '.1.weight' in name or '.1.bias' in name or '.1.running' in name:
@@ -285,7 +288,8 @@ class CNN5_DomainHeads(nn.Module):
     def parameters_phi(self, domain: str) -> List[nn.Parameter]:
         """Get domain-specific parameters (φ_e).
 
-        Returns LoRA matrices (A, B) for the specified domain.
+        Returns LoRA matrices (A, B) and classifier base weights/bias
+        for the specified domain (FedRep-style head local loop).
 
         Args:
             domain: Domain name
@@ -294,6 +298,8 @@ class CNN5_DomainHeads(nn.Module):
             List of LoRA parameters for the domain
         """
         return [
+            self.classifier.weight,
+            self.classifier.bias,
             self.classifier.lora_A[domain],
             self.classifier.lora_B[domain]
         ]
@@ -309,6 +315,8 @@ class CNN5_DomainHeads(nn.Module):
             k: v.cpu().clone()
             for k, v in self.state_dict().items()
             if 'lora_A' not in k and 'lora_B' not in k
+            and not k.startswith('classifier.weight')
+            and not k.startswith('classifier.bias')
             and '.1.weight' not in k and '.1.bias' not in k
             and '.1.running' not in k and '.1.num_batches' not in k
         }
@@ -338,5 +346,6 @@ class CNN5_DomainHeads(nn.Module):
         return {
             k: v.cpu().clone()
             for k, v in self.state_dict().items()
-            if f'lora_A.{domain}' in k or f'lora_B.{domain}' in k
+            if k.startswith('classifier.weight') or k.startswith('classifier.bias')
+            or f'lora_A.{domain}' in k or f'lora_B.{domain}' in k
         }
