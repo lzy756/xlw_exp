@@ -1,0 +1,90 @@
+# PACS FedRep + LoRA (simplified main method)
+# Global backbone (theta) aggregated via FedAvg every round.
+# Domain-specific LoRA adapters (phi) stay local; optional intra-domain averaging.
+
+# Dataset
+data:
+  dataset: "pacs"
+  root: null  # HuggingFace cache (auto-download)
+  domains: ["photo", "art_painting", "cartoon", "sketch"]
+  num_classes: 7
+  img_size: 224
+
+# Client partitioning
+partition:
+  num_clients_per_domain: 10  # 4 x 10 = 40 clients
+  alpha: 0.1                  # moderate heterogeneity
+  unload_ratio: 0.0
+  val_ratio: 0.1
+  seed: 42
+
+# Model (CNN5 with LoRA classifier)
+model:
+  backbone: "cnn5"
+  pretrained: false
+  adapter_rank: 8             # LoRA rank (kept local per domain)
+
+# Training (FedRep-style alternating)
+training:
+  total_rounds: 100
+  local_steps: 12             # more local steps to allow 10+ head steps + a few body steps
+  batch_size: 32
+  clients_participation: 0.2  # 20% clients per round
+
+  lr_theta: 0.001             # backbone lr
+  lr_phi: 0.001               # LoRA lr (same order for stability)
+  weight_decay: 0.0001
+  momentum: 0.9
+  cosine_lr: true
+  use_amp: true
+
+  decoupled_training: true    # FedRep alternating
+  phi_steps_ratio: 0.85       # ~10 head steps, ~2 body steps per round (given local_steps=12)
+
+# Selector / fairness (unused but kept for API)
+selector:
+  K: 0
+  w1: 0.0
+  w2: 0.0
+  tau: 1.0
+
+fair_weighting:
+  enable: false
+
+# Edge Manager
+edge_manager:
+  ema_beta: 0.9
+  proj_dim: 64
+
+# Augmentation
+augmentation:
+  train:
+    resize: 256
+    crop_size: 224
+    horizontal_flip: 0.5
+    color_jitter:
+      brightness: 0.2
+      contrast: 0.2
+      saturation: 0.2
+      hue: 0.05
+  test:
+    resize: 256
+    crop_size: 224
+
+# Logging
+logging:
+  log_interval: 1
+  checkpoint_interval: 20
+  output_dir: "./outputs"
+  exp_name: "pacs_cnn5_fedrep_lora"
+  use_timestamp_dir: true
+  save_config: true
+  save_experiment_info: true
+
+# System
+system:
+  device: "cuda"
+  seed: 42
+  num_workers: 4
+  pin_memory: true
+  cudnn_benchmark: true

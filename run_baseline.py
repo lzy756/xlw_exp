@@ -19,6 +19,7 @@ from baseline.models.resnet18_single import ResNet18Single
 from baseline.models.resnet50_single import ResNet50Single
 from baseline.models.cnn5_single import CNN5Single
 from baseline.core.loop_baseline import run_baseline_training
+from baseline.core.loop_fedsak import run_fedsak_training
 from data.factory import prepare_federated_data, get_dataset_info
 from utils.common import set_seed, build_logger
 from utils.experiment import ExperimentLogger
@@ -52,7 +53,7 @@ def prepare_data(config: Dict):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Baseline FL (FedAvg/FedProx/FedBN)")
+    parser = argparse.ArgumentParser(description="Baseline FL (FedAvg/FedProx/FedBN/FedSAK)")
     parser.add_argument('--config', type=str, default='configs/default.yaml', help='Path to config file')
     parser.add_argument('--domains', type=str, nargs='+', help='Override domains')
     parser.add_argument('--rounds', type=int, help='Override total rounds')
@@ -60,7 +61,7 @@ def main():
     parser.add_argument('--exp-tag', type=str, dest='exp_tag', help='Experiment tag/name')
     parser.add_argument('--output-dir', type=str, dest='output_dir', help='Override output directory')
     parser.add_argument('--no-timestamp', action='store_true', dest='no_timestamp', help='Disable timestamp dir')
-    parser.add_argument('--algo', type=str, choices=['fedavg', 'fedprox', 'fedbn'], help='Override algorithm')
+    parser.add_argument('--algo', type=str, choices=['fedavg', 'fedprox', 'fedbn', 'fedsak'], help='Override algorithm')
     parser.add_argument('--mu', type=float, help='Override FedProx mu')
     parser.add_argument('--fixed-domain', type=str, dest='fixed_domain', help='Override fixed aggregator domain')
     parser.add_argument('--lr', type=float, help='Override learning rate for baseline')
@@ -122,14 +123,27 @@ def main():
         logger.info("Initializing baseline model...")
         model = create_model(config)
 
-        metrics = run_baseline_training(
-            config=config,
-            model=model,
-            train_data=train_data,
-            val_data=val_data,
-            logger=logger,
-            exp_dir=exp_dir
-        )
+        algo = config.get('algo', 'fedavg')
+        logger.info(f"Using algorithm: {algo}")
+
+        if algo == 'fedsak':
+            metrics = run_fedsak_training(
+                config=config,
+                model=model,
+                train_data=train_data,
+                val_data=val_data,
+                logger=logger,
+                exp_dir=exp_dir
+            )
+        else:
+            metrics = run_baseline_training(
+                config=config,
+                model=model,
+                train_data=train_data,
+                val_data=val_data,
+                logger=logger,
+                exp_dir=exp_dir
+            )
 
         # Save metrics
         metrics_path = os.path.join(exp_dir, 'metrics.json')

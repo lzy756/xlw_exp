@@ -158,3 +158,50 @@ class CNN5Single(nn.Module):
             List of all model parameters
         """
         return list(self.parameters())
+
+    def state_dict_fedsak_shared(self, shared_part: str = 'fc') -> Dict[str, torch.Tensor]:
+        """Export shared layers for FedSAK aggregation.
+
+        Args:
+            shared_part: Which part to share
+                - 'fc': Only final classifier (DH scenario, efficiency)
+                - 'all': All parameters (DH scenario, full model)
+                - 'backbone': Only conv layers (TH scenario)
+
+        Returns:
+            State dict of shared parameters
+        """
+        full_state = self.state_dict()
+
+        if shared_part == 'fc':
+            # DH scenario (efficient): only share FC layer
+            return {
+                k: v.cpu().clone()
+                for k, v in full_state.items()
+                if k.startswith('fc.')
+            }
+        elif shared_part == 'all':
+            # DH scenario (full): share entire model
+            return {k: v.cpu().clone() for k, v in full_state.items()}
+        elif shared_part == 'backbone':
+            # TH scenario: share conv layers only
+            return {
+                k: v.cpu().clone()
+                for k, v in full_state.items()
+                if k.startswith('conv') or k.startswith('avgpool')
+            }
+        else:
+            raise ValueError(f"Unknown shared_part: {shared_part}")
+
+    def load_state_dict_fedsak_shared(
+        self,
+        state_dict: Dict[str, torch.Tensor],
+        shared_part: str = 'fc'
+    ) -> None:
+        """Load FedSAK-regularized shared layers.
+
+        Args:
+            state_dict: Regularized state dict from server
+            shared_part: Which part was shared (must match export)
+        """
+        self.load_state_dict(state_dict, strict=False)

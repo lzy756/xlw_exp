@@ -1,0 +1,94 @@
+# PACS FedSAK Configuration with CNN5
+# FedSAK baseline with tensor trace norm regularization
+# DH scenario: regularizes only FC layer for efficiency
+
+# Dataset
+data:
+  dataset: "pacs"
+  root: null
+  domains: ["photo", "art_painting", "cartoon", "sketch"]
+  num_classes: 7
+  img_size: 224
+
+# Client partitioning
+partition:
+  num_clients_per_domain: 10
+  alpha: 0.1
+  unload_ratio: 0.0
+  val_ratio: 0.1
+  seed: 42
+
+# Model architecture (CNN5: no pretrained weights)
+model:
+  backbone: "cnn5"
+  pretrained: false  # CNN5 trains from scratch
+  adapter_rank: 0  # No adapters for FedSAK
+
+# Training
+training:
+  total_rounds: 100
+  local_steps: 3
+  batch_size: 32
+  clients_participation: 0.2
+
+  lr: 0.01  # Local SGD learning rate
+  weight_decay: 0.0001
+  momentum: 0.9
+  cosine_lr: false  # FedSAK uses fixed LR
+  use_amp: true
+
+# FedSAK specific configuration
+fedsak:
+  lr_w: 0.01  # Trace norm regularization step size (from paper)
+  lambda: 6.0  # Regularization strength (from paper recommendations)
+  shared_part: "fc"  # DH scenario: only regularize FC layer ('fc', 'backbone', or 'all')
+
+# Algorithm
+algo: "fedsak"
+
+# Disable features not used by FedSAK
+selector:
+  K: 0
+  w1: 0.0
+  w2: 0.0
+  tau: 1.0
+
+fair_weighting:
+  enable: false
+
+edge_manager:
+  ema_beta: 0.9
+  proj_dim: 64
+
+# Data augmentation
+augmentation:
+  train:
+    resize: 256
+    crop_size: 224
+    horizontal_flip: 0.5
+    color_jitter:
+      brightness: 0.2
+      contrast: 0.2
+      saturation: 0.2
+      hue: 0.05
+  test:
+    resize: 256
+    crop_size: 224
+
+# Logging
+logging:
+  log_interval: 1
+  checkpoint_interval: 20
+  output_dir: "./outputs"
+  exp_name: "pacs_cnn5_fedsak_baseline"
+  use_timestamp_dir: true
+  save_config: true
+  save_experiment_info: true
+
+# System
+system:
+  device: "cuda"
+  seed: 42
+  num_workers: 4
+  pin_memory: true
+  cudnn_benchmark: true
