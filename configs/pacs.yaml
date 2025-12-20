@@ -52,6 +52,26 @@ selector:
 fair_weighting:
   enable: true
 
+# FAP v3 Fair Aggregation (Advanced)
+# Note: This is an experimental module for enhanced fair-weighted aggregation
+# with drift penalty and coverage compensation. Disabled by default.
+fair_aggregation:
+  enable: false  # Master switch
+  # DC/Edge side parameters
+  alpha_L: 0.9     # EMA smoothing for validation loss
+  tau_d: 5         # Drift snapshot interval (rounds)
+  T_H: 15.0        # Coverage compensation scale
+  alpha_min: 0.125  # Threshold for coverage compensation (1/E for E=8 domains)
+  # Cloud side parameters
+  w1: 1.0          # Loss compensation weight (higher loss → higher weight)
+  w2: 0.3          # Drift penalty weight (higher drift → lower weight)
+  w3: 0.5          # Coverage compensation weight
+  tau: 1.0         # Softmax temperature
+  gamma: 0.5       # Sample weight exponent (0=ignore, 1=full FedAvg)
+  alpha_floor: 0.05  # Minimum aggregation weight per domain
+  alpha_ceil: 0.7    # Maximum aggregation weight per domain
+  ema_beta: 0.8      # Weight EMA smoothing factor
+
 # Edge Manager
 edge_manager:
   ema_beta: 0.9

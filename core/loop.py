@@ -20,6 +20,11 @@ from core.aggregator import (
 )
 from core.edge_manager import EdgeManager
 from core.selector import FAPSelector
+from core.fair_aggregation import (
+    DomainStateManager,
+    DriftCalculator,
+    CloudAggregator
+)
 from utils.metrics import per_domain_metrics
 from utils.common import get_git_commit_hash
 
@@ -336,7 +341,60 @@ def run_training(
     # FedRep decoupled training settings
     decoupled_training = config['training'].get('decoupled_training', True)
     phi_steps_ratio = config['training'].get('phi_steps_ratio', 0.6)
-    
+
+    # ========== FAP v3 Fair Aggregation Module (Optional) ==========
+    # Initialize fair aggregation components if enabled
+    fair_agg_config = config.get('fair_aggregation', {})
+    use_fair_aggregation = fair_agg_config.get('enable', False)
+
+    fair_state_mgr = None
+    fair_drift_calc = None
+    fair_cloud_agg = None
+
+    if use_fair_aggregation:
+        logger.info("[FAP-v3] Initializing fair aggregation module...")
+
+        # Get feature dimension from model
+        feature_dim = getattr(model, 'feature_dim', 512)
+        num_classes = config['data'].get('num_classes', 126)
+
+        # Initialize domain state manager (A1, A2, A4)
+        fair_state_mgr = DomainStateManager(
+            domains=domains,
+            alpha_L=fair_agg_config.get('alpha_L', 0.9),
+            alpha_min=fair_agg_config.get('alpha_min', 0.125),
+            T_H=fair_agg_config.get('T_H', 15.0)
+        )
+
+        # Initialize drift calculator (A3)
+        fair_drift_calc = DriftCalculator(
+            feature_dim=feature_dim,
+            proj_dim=config.get('edge_manager', {}).get('proj_dim', 64),
+            num_classes=num_classes,
+            tau_d=fair_agg_config.get('tau_d', 5),
+            seed=config.get('system', {}).get('seed', 42),
+            device=config.get('system', {}).get('device', 'cuda')
+        )
+
+        # Initialize cloud aggregator (B2-B5)
+        fair_cloud_agg = CloudAggregator(
+            domains=domains,
+            w1=fair_agg_config.get('w1', 1.0),
+            w2=fair_agg_config.get('w2', 0.3),
+            w3=fair_agg_config.get('w3', 0.5),
+            tau=fair_agg_config.get('tau', 1.0),
+            gamma=fair_agg_config.get('gamma', 0.5),
+            alpha_floor=fair_agg_config.get('alpha_floor', 0.05),
+            alpha_ceil=fair_agg_config.get('alpha_ceil', 0.7),
+            ema_beta=fair_agg_config.get('ema_beta', 0.8)
+        )
+
+        logger.info(f"[FAP-v3] Module initialized: w1={fair_agg_config.get('w1', 1.0)}, "
+                   f"w2={fair_agg_config.get('w2', 0.3)}, w3={fair_agg_config.get('w3', 0.5)}")
+    else:
+        logger.info("[FAP-v3] Fair aggregation disabled, using standard FedAvg")
+    # ================================================================
+
     # Use the provided experiment directory
     output_dir = exp_dir
 
@@ -472,6 +530,10 @@ def run_training(
             domain_accuracies[domain] = val_acc
             logger.info(f"Domain {domain}: val_acc={val_acc:.2f}%, L_e={L_e:.4f}")
 
+            # Update fair aggregation state manager with EMA loss (if enabled)
+            if use_fair_aggregation and fair_state_mgr is not None:
+                fair_state_mgr.update_loss(domain, val_loss)
+
         # Calculate aggregate metrics
         avg_acc, worst_acc, variance = per_domain_metrics(domain_accuracies)
         logger.info(f"Round {round_num} metrics:")
@@ -489,6 +551,50 @@ def run_training(
         # Compute drift for next round (also resets prototype accumulators)
         for domain in domains:
             edge_manager.compute_drift(domain)
+
+        # ========== FAP v3 Fair Aggregation State Update (Optional) ==========
+        # This section computes advanced fair aggregation metrics but uses them
+        # only when fair_aggregation.enable is True. The computed weights are
+        # logged for analysis but actual aggregation uses standard FedAvg.
+        if use_fair_aggregation and fair_state_mgr is not None:
+            # Update domain sample counts
+            for domain in domains:
+                domain_samples = sum(domain_theta_weights.get(domain, [0]))
+                fair_state_mgr.set_sample_count(domain, domain_samples)
+
+            # Update drift scores from edge manager
+            drift_scores = edge_manager.get_drift_scores()
+            for domain in domains:
+                fair_state_mgr.set_drift(domain, drift_scores.get(domain, 0.0))
+
+            # Get all domain states for cloud aggregation
+            fair_states = fair_state_mgr.get_all_states()
+
+            # Compute fair aggregation weights (B2-B5)
+            fair_weights = fair_cloud_agg.compute_aggregation_weights(
+                L_map=fair_states['L_map'],
+                drift_map=fair_states['drift_map'],
+                H_map=fair_states['H_map'],
+                n_map=fair_states['n_map']
+            )
+
+            # Update coverage gaps for next round
+            fair_state_mgr.update_coverage_gap(fair_weights)
+
+            # Step drift calculator round counter
+            fair_drift_calc.step_round()
+
+            # Log detailed fair aggregation metrics
+            logger.info(f"[FAP-v3] Round {round_num} fair weights computed:")
+            for domain in domains:
+                L_e = fair_states['L_map'].get(domain, 0.0)
+                drift_e = fair_states['drift_map'].get(domain, 0.0)
+                H_e = fair_states['H_map'].get(domain, 0.0)
+                alpha_e = fair_weights.get(domain, 1.0 / len(domains))
+                logger.info(f"  {domain}: L={L_e:.4f}, Δ={drift_e:.4f}, "
+                           f"H={H_e:.4f}, α={alpha_e:.4f}")
+
+        # =====================================================================
 
         # Phase 6: Checkpointing
         if round_num % checkpoint_interval == 0:
