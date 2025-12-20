@@ -222,8 +222,9 @@ class LocalTrainer:
         domain: str,
         dataset,
         batch_size: int = 32,
-        edge_manager: Optional[EdgeManager] = None
-    ):
+        edge_manager: Optional[EdgeManager] = None,
+        return_features: bool = False
+    ) -> tuple:
         """Evaluate model on domain's validation data.
 
         Args:
@@ -231,9 +232,11 @@ class LocalTrainer:
             dataset: Validation dataset
             batch_size: Batch size for evaluation
             edge_manager: Optional EdgeManager for updating eval stats
+            return_features: If True, return (val_loss, val_acc, L_e, features, labels)
 
         Returns:
-            Tuple of (val_loss, val_accuracy, L_e)
+            Tuple of (val_loss, val_accuracy, L_e) or
+            (val_loss, val_accuracy, L_e, features, labels) if return_features=True
         """
         self.model.eval()
 
@@ -254,14 +257,17 @@ class LocalTrainer:
         all_features = []
         all_labels = []
 
+        # Always collect features if edge_manager provided OR return_features requested
+        collect_features = edge_manager is not None or return_features
+
         with torch.no_grad():
             for images, labels, domains in dataloader:
                 images = images.to(self.device)
                 labels = labels.to(self.device)
 
-                # Extract features if edge_manager provided
+                # Extract features if needed
                 with torch.cuda.amp.autocast(enabled=self.device == 'cuda'):
-                    if edge_manager is not None:
+                    if collect_features:
                         features = self.model.forward_features(images)
                         all_features.append(features.cpu())
                         all_labels.append(labels.cpu())
@@ -294,6 +300,12 @@ class LocalTrainer:
                 feats=features,
                 labels=labels
             )
+
+        # Return with features if requested
+        if return_features and all_features:
+            features_out = torch.cat(all_features, dim=0)
+            labels_out = torch.cat(all_labels, dim=0)
+            return val_loss, val_acc, L_e, features_out, labels_out
 
         return val_loss, val_acc, L_e
 
@@ -510,22 +522,36 @@ def run_training(
 
         # Phase 5: Evaluation
         domain_accuracies = {}
+        domain_features_cache = {}  # Cache for FAP v3 S1 statistics
+
         for domain in domains:
             # Load global theta
             model.load_state_dict(theta_global, strict=False)
-            
+
             # Load domain's aggregated phi
             phi_state = edge_manager.get_phi(domain)
             if phi_state is not None:
                 model.load_state_dict(phi_state, strict=False)
 
             # Evaluate on domain's validation set
-            val_loss, val_acc, L_e = trainer.evaluate_domain(
-                domain=domain,
-                dataset=val_data[domain],
-                batch_size=batch_size,
-                edge_manager=edge_manager
-            )
+            # Request features if FAP v3 is enabled for S1 statistic computation
+            if use_fair_aggregation and fair_drift_calc is not None:
+                eval_result = trainer.evaluate_domain(
+                    domain=domain,
+                    dataset=val_data[domain],
+                    batch_size=batch_size,
+                    edge_manager=edge_manager,
+                    return_features=True
+                )
+                val_loss, val_acc, L_e, feats, labels = eval_result
+                domain_features_cache[domain] = (feats, labels)
+            else:
+                val_loss, val_acc, L_e = trainer.evaluate_domain(
+                    domain=domain,
+                    dataset=val_data[domain],
+                    batch_size=batch_size,
+                    edge_manager=edge_manager
+                )
 
             domain_accuracies[domain] = val_acc
             logger.info(f"Domain {domain}: val_acc={val_acc:.2f}%, L_e={L_e:.4f}")
@@ -553,19 +579,42 @@ def run_training(
             edge_manager.compute_drift(domain)
 
         # ========== FAP v3 Fair Aggregation State Update (Optional) ==========
-        # This section computes advanced fair aggregation metrics but uses them
-        # only when fair_aggregation.enable is True. The computed weights are
-        # logged for analysis but actual aggregation uses standard FedAvg.
-        if use_fair_aggregation and fair_state_mgr is not None:
+        # This section computes advanced fair aggregation metrics using S1
+        # statistic aggregation for drift computation.
+        if use_fair_aggregation and fair_state_mgr is not None and fair_drift_calc is not None and fair_cloud_agg is not None:
             # Update domain sample counts
             for domain in domains:
                 domain_samples = sum(domain_theta_weights.get(domain, [0]))
                 fair_state_mgr.set_sample_count(domain, domain_samples)
 
-            # Update drift scores from edge manager
-            drift_scores = edge_manager.get_drift_scores()
+            # ===== S1 Statistic Aggregation for Drift Computation (A3) =====
+            # Compute drift using DriftCalculator with cached features
             for domain in domains:
-                fair_state_mgr.set_drift(domain, drift_scores.get(domain, 0.0))
+                if domain in domain_features_cache:
+                    feats, labels = domain_features_cache[domain]
+                    # Compute S1 statistics (per-class projected feature sums)
+                    client_stats = fair_drift_calc.compute_client_statistics(
+                        features=feats.to(config.get('system', {}).get('device', 'cuda')),
+                        labels=labels.to(config.get('system', {}).get('device', 'cuda'))
+                    )
+                    # Aggregate to domain level (simulating DC aggregation)
+                    fair_drift_calc.aggregate_domain_statistics(domain, [client_stats])
+                    # Compute prototypes
+                    fair_drift_calc.compute_prototypes(domain)
+                    # Update snapshot if needed (every tau_d rounds)
+                    fair_drift_calc.update_snapshot(domain)
+                    # Compute drift score
+                    drift_score = fair_drift_calc.compute_drift(domain)
+                    # Reset accumulators for next round
+                    fair_drift_calc.reset_domain_accumulators(domain)
+                else:
+                    drift_score = 0.0
+
+                # Update state manager with computed drift
+                fair_state_mgr.set_drift(domain, drift_score)
+
+            # Step drift calculator round counter
+            fair_drift_calc.step_round()
 
             # Get all domain states for cloud aggregation
             fair_states = fair_state_mgr.get_all_states()
@@ -580,9 +629,6 @@ def run_training(
 
             # Update coverage gaps for next round
             fair_state_mgr.update_coverage_gap(fair_weights)
-
-            # Step drift calculator round counter
-            fair_drift_calc.step_round()
 
             # Log detailed fair aggregation metrics
             logger.info(f"[FAP-v3] Round {round_num} fair weights computed:")
