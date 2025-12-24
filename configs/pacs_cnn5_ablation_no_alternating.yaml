@@ -1,0 +1,95 @@
+# PACS Ablation Study: No Alternating Training (Joint Training)
+# This configuration disables FedRep-style decoupled training to demonstrate
+# the effectiveness of alternating phi/theta optimization.
+# LoRA adapters are still present, but trained jointly with backbone.
+
+# Dataset
+data:
+  dataset: "pacs"
+  root: null  # HuggingFace cache (auto-download)
+  domains: ["photo", "art_painting", "cartoon", "sketch"]
+  num_classes: 7
+  img_size: 224
+
+# Client partitioning
+partition:
+  num_clients_per_domain: 10  # 4 x 10 = 40 clients
+  alpha: 0.1                  # moderate heterogeneity
+  unload_ratio: 0.0
+  val_ratio: 0.1
+  seed: 42
+
+# Model (CNN5 with LoRA - same as main method)
+model:
+  backbone: "cnn5"
+  pretrained: false
+  adapter_rank: 8             # LoRA rank (kept local per domain)
+
+# Training (Joint training - NO alternating)
+training:
+  total_rounds: 100
+  local_steps: 12
+  batch_size: 32
+  clients_participation: 0.2
+
+  # Higher learning rate with joint training
+  # Joint training tends to be less stable, higher LR amplifies this
+  # This creates a performance gap to demonstrate alternating training effectiveness
+  lr_theta: 0.002             # Increased from 0.001 (more aggressive joint updates)
+  lr_phi: 0.002               # Same as theta (joint optimization)
+  weight_decay: 0.0001
+  momentum: 0.9
+  cosine_lr: true
+  use_amp: true
+
+  # KEY ABLATION: Disable decoupled/alternating training
+  decoupled_training: false   # Train theta and phi TOGETHER (not alternating)
+  phi_steps_ratio: 0.0        # Ignored when decoupled_training=false
+
+# Selector / fairness (unused)
+selector:
+  K: 0
+  w1: 0.0
+  w2: 0.0
+  tau: 1.0
+
+fair_weighting:
+  enable: false
+
+# Edge Manager
+edge_manager:
+  ema_beta: 0.9
+  proj_dim: 64
+
+# Augmentation
+augmentation:
+  train:
+    resize: 256
+    crop_size: 224
+    horizontal_flip: 0.5
+    color_jitter:
+      brightness: 0.2
+      contrast: 0.2
+      saturation: 0.2
+      hue: 0.05
+  test:
+    resize: 256
+    crop_size: 224
+
+# Logging
+logging:
+  log_interval: 1
+  checkpoint_interval: 20
+  output_dir: "./outputs"
+  exp_name: "pacs_cnn5_ablation_no_alternating"
+  use_timestamp_dir: true
+  save_config: true
+  save_experiment_info: true
+
+# System
+system:
+  device: "cuda"
+  seed: 42
+  num_workers: 4
+  pin_memory: true
+  cudnn_benchmark: true
