@@ -108,24 +108,30 @@ class LocalTrainer:
         theta_params = self.model.parameters_theta()
         phi_params = self.model.parameters_phi(domain)
 
+        # Check if phi params exist (for no-LoRA ablation models)
+        has_phi_params = len(phi_params) > 0
+
         optimizer_theta = torch.optim.Adam(
             theta_params,
             lr=self.lr_theta,
             weight_decay=self.weight_decay
         )
 
-        optimizer_phi = torch.optim.Adam(
-            phi_params,
-            lr=lr_phi,
-            weight_decay=self.weight_decay
-        )
+        # Only create phi optimizer if phi params exist
+        optimizer_phi = None
+        if has_phi_params:
+            optimizer_phi = torch.optim.Adam(
+                phi_params,
+                lr=lr_phi,
+                weight_decay=self.weight_decay
+            )
 
         # Setup schedulers if using cosine LR
         if self.cosine_lr:
             from torch.optim.lr_scheduler import CosineAnnealingLR
             total_iters = local_steps * len(dataloader)
             scheduler_theta = CosineAnnealingLR(optimizer_theta, T_max=max(1, total_iters))
-            scheduler_phi = CosineAnnealingLR(optimizer_phi, T_max=max(1, total_iters))
+            scheduler_phi = CosineAnnealingLR(optimizer_phi, T_max=max(1, total_iters)) if has_phi_params else None
         else:
             scheduler_theta = scheduler_phi = None
 
@@ -159,8 +165,9 @@ class LocalTrainer:
                     train_phi = False
             else:
                 # Joint training (original behavior)
+                # If no phi params, only train theta
                 train_theta = True
-                train_phi = True
+                train_phi = has_phi_params
 
             for batch_idx, (images, labels, domains) in enumerate(dataloader):
                 images = images.to(self.device)
@@ -168,7 +175,8 @@ class LocalTrainer:
 
                 # Zero gradients
                 optimizer_theta.zero_grad()
-                optimizer_phi.zero_grad()
+                if optimizer_phi is not None:
+                    optimizer_phi.zero_grad()
 
                 # Forward pass with AMP
                 with torch.cuda.amp.autocast(enabled=use_amp):
@@ -183,14 +191,14 @@ class LocalTrainer:
                 if train_theta:
                     scaler.unscale_(optimizer_theta)
                     torch.nn.utils.clip_grad_norm_(theta_params, max_norm)
-                if train_phi:
+                if train_phi and optimizer_phi is not None:
                     scaler.unscale_(optimizer_phi)
                     torch.nn.utils.clip_grad_norm_(phi_params, max_norm)
 
                 # Update parameters based on training phase
                 if train_theta:
                     scaler.step(optimizer_theta)
-                if train_phi:
+                if train_phi and optimizer_phi is not None:
                     scaler.step(optimizer_phi)
                 scaler.update()
 

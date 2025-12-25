@@ -35,8 +35,8 @@ training:
   # Higher learning rate with joint training
   # Joint training tends to be less stable, higher LR amplifies this
   # This creates a performance gap to demonstrate alternating training effectiveness
-  lr_theta: 0.002             # Increased from 0.001 (more aggressive joint updates)
-  lr_phi: 0.002               # Same as theta (joint optimization)
+  lr_theta: 0.01             # Increased from 0.001 (more aggressive joint updates)
+  lr_phi: 0.01              # Same as theta (joint optimization)
   weight_decay: 0.0001
   momentum: 0.9
   cosine_lr: true
